@@ -14,15 +14,15 @@ A key previously pasted into a chat should be considered exposed: revoke it and 
 
 ## Included workspaces
 
-- Executive dashboard: annual margin, screening removal proxy, throughput, and scenario comparison.
+- Executive dashboard: EBITDA-like operating surplus, annual economic surplus after annualised capital recovery, screening removal proxy, throughput, and scenario comparison.
 - Technical analysis: mass, cost, revenue, and application gate trace.
-- Optimisation: Pareto set for annual margin and screening net removal.
+- Optimisation: Pareto set for annual economic surplus and screening net removal.
 - Sensitivity: deterministic grid for feedstock cost, CAPEX, and energy demand.
 - AI analyst: optional narrative explanation of structured platform outputs.
 
 ## Scientific and commercial boundaries
 
-This is a transparent screening prototype, not a bankable feasibility study, process guarantee, certification engine, or carbon-credit calculator. Country prices/costs, process yields, energy demand, CAPEX, market demand and stable-carbon fractions are editable notebook placeholders until replaced by local quotations, measured plant data and verified LCA/MRV inputs. Net removal is a simplified screening proxy, not verified or creditable removal. Carbon-credit revenue remains disabled. Application gates are screening only and do not establish certification.
+This is a transparent screening prototype, not a bankable feasibility study, process guarantee, certification engine, or carbon-credit calculator. Country prices/costs, process yields, energy demand, CAPEX, market demand and stable-carbon fractions are editable notebook placeholders until replaced by local quotations, measured plant data and verified LCA/MRV inputs. EBITDA-like surplus excludes annualised capital recovery; annual economic surplus deducts that capital charge. NPV, IRR and payback are not calculated because full project cash-flow, tax, working-capital and financing schedules are not modelled. Energy-export revenue uses explicit GJ/year × USD/GJ assumptions, not tonnes × USD/GJ. These energy-yield/LHV assumptions remain illustrative placeholders. Net removal is a simplified screening proxy, not verified or creditable removal. Carbon-credit revenue remains disabled. Application gates are screening only and do not establish certification.
 
 The calculation engine follows the core scenario equations and assumptions in `reference/MENA_Biochar_Optimisation_Platform_V5.ipynb`. The separate coproduct workbook model is slow-pyrolysis-specific and is not treated as a generic energy model here. Research ML results are not used to generate plant guarantees or optimise project economics.
 

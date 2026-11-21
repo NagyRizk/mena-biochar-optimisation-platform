@@ -16,7 +16,6 @@ def cost_revenue_breakdown(result):
         "Product revenue": result["product_revenue_usd_y"],
         "Energy export revenue": result.get("energy_revenue_usd_y", 0),
         "Carbon-credit revenue": result["carbon_revenue_usd_y"],
-        "Annualised capital recovery": result["annualised_capex_usd_y"],
     }
     return pd.DataFrame(
         [{"category": k, "type": "Cost", "usd_per_year": v} for k,v in costs.items()] +

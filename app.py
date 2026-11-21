@@ -167,14 +167,14 @@ if page == "Executive dashboard":
         left,right = st.columns(2)
         with left:
             st.markdown("**Best financial outcome**")
-            st.metric("Annual margin", f"${best_margin.annual_margin_usd_y:,.0f}")
+            st.metric("Annual economic surplus", f"${best_margin.annual_economic_surplus_usd_y:,.0f}")
             st.write(f"{str(best_margin.technology).replace('_',' ').title()} · {str(best_margin.route).replace('_',' ').title()}")
             st.write(f"Screening removal: **{best_margin.net_removal_tCO2py:,.0f} tCO₂/year**")
         with right:
             st.markdown("**Highest removal estimate**")
             st.metric("Screening net removal", f"{best_cdr.net_removal_tCO2py:,.0f} tCO₂/year")
             st.write(f"{str(best_cdr.technology).replace('_',' ').title()} · {str(best_cdr.route).replace('_',' ').title()}")
-            st.write(f"Annual margin: **${best_cdr.annual_margin_usd_y:,.0f}/year**")
+            st.write(f"Annual economic surplus: **${best_cdr.annual_economic_surplus_usd_y:,.0f}/year**")
         st.caption("These may be different configurations because the model optimises financial margin and screening carbon removal as separate objectives.")
 
         st.subheader("3 · Where does the best financial case spend and earn money?")
@@ -186,13 +186,13 @@ if page == "Executive dashboard":
             cost_fig.update_layout(height=360, legend_title_text="")
             st.plotly_chart(cost_fig, use_container_width=True)
         marketable = float(best_margin.get("marketable_char_tpy", 0) or 0)
-        if marketable > 0:
+        if marketable > 0 and float(best_margin.get("product_revenue_usd_y", 0) or 0) > 0:
             break_even_price = (float(best_margin.total_cost_usd_y)-float(best_margin.carbon_revenue_usd_y)-float(best_margin.get("energy_revenue_usd_y", 0) or 0))/marketable
             st.info(f"Approximate product break-even price (after other modelled revenue streams) for this configuration: **${break_even_price:,.0f}/t** at the modelled marketable volume of {marketable:,.0f} t/year. This is a simple screening threshold; it assumes other costs, demand and output remain unchanged.")
 
         with st.expander("Full configuration comparison", expanded=False):
-            display_cols=["technology","product_type","route","char_tpy","marketable_char_tpy","product_revenue_usd_y","total_cost_usd_y","annual_margin_usd_y","net_removal_tCO2py","pareto_optimal","quality_status"]
-            st.dataframe(results[display_cols].rename(columns={"technology":"Technology","product_type":"Product","route":"Route","char_tpy":"Product (t/y)","marketable_char_tpy":"Marketable product (t/y)","product_revenue_usd_y":"Product revenue (USD/y)","total_cost_usd_y":"Total cost (USD/y)","annual_margin_usd_y":"Annual economic surplus (USD/y)","net_removal_tCO2py":"Screening removal (tCO₂/y)","pareto_optimal":"Pareto-efficient","quality_status":"Quality status"}), use_container_width=True, hide_index=True)
+            display_cols=["technology","product_type","route","char_tpy","marketable_char_tpy","product_revenue_usd_y","energy_revenue_usd_y","carbon_revenue_usd_y","ebitda_like_usd_y","annualised_capex_usd_y","total_cost_usd_y","annual_economic_surplus_usd_y","net_removal_tCO2py","pareto_optimal","quality_status"]
+            st.dataframe(results[display_cols].rename(columns={"technology":"Technology","product_type":"Product","route":"Route","char_tpy":"Product (t/y)","marketable_char_tpy":"Marketable product (t/y)","product_revenue_usd_y":"Product revenue (USD/y)","energy_revenue_usd_y":"Energy revenue (USD/y)","carbon_revenue_usd_y":"Carbon revenue (USD/y)","ebitda_like_usd_y":"EBITDA-like surplus (USD/y)","annualised_capex_usd_y":"Annualised capital (USD/y)","total_cost_usd_y":"Total cost incl. capital (USD/y)","annual_economic_surplus_usd_y":"Annual economic surplus (USD/y)","net_removal_tCO2py":"Screening removal (tCO₂/y)","pareto_optimal":"Pareto-efficient","quality_status":"Quality status"}), use_container_width=True, hide_index=True)
             st.download_button("Download configuration comparison (CSV)", results.to_csv(index=False), "biochar_configuration_comparison.csv", "text/csv")
         st.caption("Model outputs are indicative. Country prices, technology yields, utility demand and CAPEX remain editable assumptions; validate them with local quotations, plant data and offtake evidence. Carbon removal is a simplified screening proxy, not verified LCA/MRV.")
 
@@ -307,7 +307,7 @@ elif page == "Technical":
         a,b,c = st.columns(3)
         a.metric("Dry feed", f"{result['dry_feed_tpy']:,.1f} t/y")
         b.metric("Char / solid product", f"{result['char_tpy']:,.1f} t/y")
-        c.metric("Annual margin", f"${result['annual_margin_usd_y']:,.0f}")
+        c.metric("Annual economic surplus", f"${result['annual_economic_surplus_usd_y']:,.0f}")
         st.markdown("#### Mass, cost and revenue outputs")
         st.dataframe(pd.DataFrame([result]).T.rename(columns={0:"Value"}), use_container_width=True)
         st.markdown("#### Deterministic cost and revenue decomposition")

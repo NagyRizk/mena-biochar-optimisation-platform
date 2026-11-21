@@ -135,22 +135,28 @@ if page == "Executive dashboard":
         best_cdr = results.sort_values("net_removal_tCO2py", ascending=False).iloc[0]
         pareto_count = int(results["pareto_optimal"].sum())
         c1,c2,c3,c4 = st.columns(4)
-        c1.metric("Best annual operating margin", f"${best_margin.annual_margin_usd_y:,.0f}", help="Highest modelled annual revenue minus annual modelled costs.")
+        c1.metric("Best annual economic surplus", f"${best_margin.annual_economic_surplus_usd_y:,.0f}", help="Total revenue less operating costs and annualised capital recovery; not EBITDA.")
         c2.metric("Highest CDR screening estimate", f"{best_cdr.net_removal_tCO2py:,.0f} tCO₂/y", help="Screening proxy only; not verified carbon removal or creditable tonnes.")
         c3.metric("Pareto-efficient options", f"{pareto_count}", help="Options not dominated on both margin and screening removal.")
         c4.metric("Dry feed throughput", f"{best_margin.dry_feed_tpy:,.0f} t/y")
 
-        if best_margin.annual_margin_usd_y < 0:
+        if best_margin.annual_economic_surplus_usd_y < 0:
             st.warning("**Current case is below break-even.** This is a result of the assumptions shown in the sidebar, not proof that the technology is inherently unviable. Test feedstock cost, selling price, demand, energy costs, CAPEX, discount rate and plant life against supplier quotations and offtake evidence.")
         else:
             st.success("The best-ranked configuration has a positive modelled annual margin under the current assumptions. This is a screening result, not a bankable feasibility conclusion.")
+
+        finance_a, finance_b = st.columns(2)
+        finance_a.metric("EBITDA-like operating surplus", f"${best_margin.ebitda_like_usd_y:,.0f}/y",
+                         help="Revenue less modelled operating costs, excluding annualised capital recovery; not a statutory EBITDA calculation.")
+        finance_b.metric("Annualised capital recovery", f"${best_margin.annualised_capex_usd_y:,.0f}/y",
+                         help="Equivalent annual capital charge based on the selected discount rate and plant life.")
 
         st.subheader("1 · Which configurations perform best financially?")
         ranked = results.sort_values("annual_margin_usd_y", ascending=True).copy()
         ranked["configuration"] = ranked["technology"].astype(str).str.replace("_", " ").str.title() + " · " + ranked["route"].astype(str).str.replace("_", " ").str.title()
         fig = px.bar(ranked, x="annual_margin_usd_y", y="configuration", orientation="h", color="pareto_optimal",
                      color_discrete_map={True:"#176b5b",False:"#b9c8c2"},
-                     labels={"annual_margin_usd_y":"Annual margin (USD/year)","configuration":"Technology · route","pareto_optimal":"Pareto-efficient"},
+                     labels={"annual_margin_usd_y":"Annual economic surplus (USD/year)","configuration":"Technology · route","pareto_optimal":"Pareto-efficient"},
                      hover_data={"char_tpy":":,.0f","net_removal_tCO2py":":,.0f","annual_margin_usd_y":":,.0f"})
         fig.add_vline(x=0, line_dash="dash", line_color="#d49a45", annotation_text="Break-even", annotation_position="top")
         fig.update_layout(height=max(390, min(720, 30*len(ranked)+130)), legend_title_text="")
@@ -181,12 +187,12 @@ if page == "Executive dashboard":
             st.plotly_chart(cost_fig, use_container_width=True)
         marketable = float(best_margin.get("marketable_char_tpy", 0) or 0)
         if marketable > 0:
-            break_even_price = (float(best_margin.total_cost_usd_y)-float(best_margin.carbon_revenue_usd_y))/marketable
-            st.info(f"Approximate break-even product price for this configuration: **${break_even_price:,.0f}/t** at the modelled marketable volume of {marketable:,.0f} t/year. This is a simple screening threshold; it assumes other costs, demand and output remain unchanged.")
+            break_even_price = (float(best_margin.total_cost_usd_y)-float(best_margin.carbon_revenue_usd_y)-float(best_margin.get("energy_revenue_usd_y", 0) or 0))/marketable
+            st.info(f"Approximate product break-even price (after other modelled revenue streams) for this configuration: **${break_even_price:,.0f}/t** at the modelled marketable volume of {marketable:,.0f} t/year. This is a simple screening threshold; it assumes other costs, demand and output remain unchanged.")
 
         with st.expander("Full configuration comparison", expanded=False):
             display_cols=["technology","product_type","route","char_tpy","marketable_char_tpy","product_revenue_usd_y","total_cost_usd_y","annual_margin_usd_y","net_removal_tCO2py","pareto_optimal","quality_status"]
-            st.dataframe(results[display_cols].rename(columns={"technology":"Technology","product_type":"Product","route":"Route","char_tpy":"Product (t/y)","marketable_char_tpy":"Marketable product (t/y)","product_revenue_usd_y":"Product revenue (USD/y)","total_cost_usd_y":"Total cost (USD/y)","annual_margin_usd_y":"Annual margin (USD/y)","net_removal_tCO2py":"Screening removal (tCO₂/y)","pareto_optimal":"Pareto-efficient","quality_status":"Quality status"}), use_container_width=True, hide_index=True)
+            st.dataframe(results[display_cols].rename(columns={"technology":"Technology","product_type":"Product","route":"Route","char_tpy":"Product (t/y)","marketable_char_tpy":"Marketable product (t/y)","product_revenue_usd_y":"Product revenue (USD/y)","total_cost_usd_y":"Total cost (USD/y)","annual_margin_usd_y":"Annual economic surplus (USD/y)","net_removal_tCO2py":"Screening removal (tCO₂/y)","pareto_optimal":"Pareto-efficient","quality_status":"Quality status"}), use_container_width=True, hide_index=True)
             st.download_button("Download configuration comparison (CSV)", results.to_csv(index=False), "biochar_configuration_comparison.csv", "text/csv")
         st.caption("Model outputs are indicative. Country prices, technology yields, utility demand and CAPEX remain editable assumptions; validate them with local quotations, plant data and offtake evidence. Carbon removal is a simplified screening proxy, not verified LCA/MRV.")
 
@@ -255,7 +261,9 @@ elif page == "Technical":
         st.latex(r"C_{route}=P_{solid}\,c_{route}")
         st.latex(r"P_{marketable}=\min(P_{solid},D_{annual}\,f_{route})")
         st.latex(r"R_{product}=P_{marketable}\,p_{product}")
-        st.latex(r"\Pi=R_{product}+R_{CDR}-[C_{feed}+C_{transport}+C_{electricity}+C_{heat}+C_{capital,annual}+C_{fixed}+C_{labour}+C_{route}]")
+        st.latex(r"EBITDA_{screen}=R_{product}+R_{energy}+R_{CDR}-C_{operating}")
+        st.latex(r"Surplus_{economic}=EBITDA_{screen}-C_{capital,annual}")
+        st.markdown("Energy export is calculated as exported GJ/year × USD/GJ. Gasification and solid-fuel routes use explicit editable energy-yield/LHV placeholders. Internal process heat is represented as a heat cost only; no separate heat-export credit or coproduct sale is assumed. NPV, IRR and payback are not shown because project cash-flow, tax, working-capital, financing and replacement-capital schedules are not implemented.")
         st.markdown("The discount rate and plant life are editable in the sidebar under Project finance assumptions and are used in the capital recovery factor. Route-specific demand fractions and route costs are fixed in the `ROUTES` configuration. Carbon-credit revenue is zero unless both crediting and accounting-verification flags are enabled (both are currently false).")
 
     with st.expander("7. Carbon-removal screening model", expanded=True):
@@ -384,7 +392,7 @@ elif page == "Optimisation":
         st.markdown("#### Latest custom run")
         a,b,c,d = st.columns(4)
         a.metric("Solid product", f"{r['char_tpy']:,.1f} t/y")
-        b.metric("Annual margin", f"${r['annual_margin_usd_y']:,.0f}")
+        b.metric("Annual economic surplus", f"${r['annual_economic_surplus_usd_y']:,.0f}")
         c.metric("Screening net removal", f"{r['net_removal_tCO2py']:,.1f} tCO₂/y")
         d.metric("Dry feed", f"{r['dry_feed_tpy']:,.1f} t/y")
         st.dataframe(pd.DataFrame([r]).T.rename(columns={0:"Value"}), use_container_width=True)

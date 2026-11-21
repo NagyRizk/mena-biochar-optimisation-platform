@@ -143,7 +143,7 @@ if page == "Executive dashboard":
         if best_margin.annual_economic_surplus_usd_y < 0:
             st.warning("**Current case is below break-even.** This is a result of the assumptions shown in the sidebar, not proof that the technology is inherently unviable. Test feedstock cost, selling price, demand, energy costs, CAPEX, discount rate and plant life against supplier quotations and offtake evidence.")
         else:
-            st.success("The best-ranked configuration has a positive modelled annual margin under the current assumptions. This is a screening result, not a bankable feasibility conclusion.")
+            st.success("The best-ranked configuration has a positive modelled annual economic surplus under the current assumptions. This is a screening result, not a bankable feasibility conclusion.")
 
         finance_a, finance_b = st.columns(2)
         finance_a.metric("EBITDA-like operating surplus", f"${best_margin.ebitda_like_usd_y:,.0f}/y",
@@ -161,7 +161,7 @@ if page == "Executive dashboard":
         fig.add_vline(x=0, line_dash="dash", line_color="#d49a45", annotation_text="Break-even", annotation_position="top")
         fig.update_layout(height=max(390, min(720, 30*len(ranked)+130)), legend_title_text="")
         st.plotly_chart(fig, use_container_width=True)
-        st.caption("Bars to the right of zero have a positive modelled annual margin; bars to the left indicate an annual loss. Green identifies Pareto-efficient options.")
+        st.caption("Bars to the right of zero have a positive modelled annual economic surplus after annualised capital recovery; bars to the left indicate a deficit. Green identifies Pareto-efficient options.")
 
         st.subheader("2 · Compare the two decision priorities")
         left,right = st.columns(2)
@@ -283,7 +283,7 @@ elif page == "Technical":
 
     with st.expander("9. Optimisation mathematics and decision rule"):
         st.latex(r"\max (\Pi,\;CO_{2,net,screen})")
-        st.markdown("The optimiser enumerates the technology-route combinations permitted by the technology table, evaluates each deterministically, and marks a scenario Pareto-optimal if no other scenario is at least as good in both annual margin and screening net removal and strictly better in one. It does not use a weighted score or select a universal winner. The current implementation assigns the full solid output to one route per scenario; it does not optimise split allocations.")
+        st.markdown("The optimiser enumerates the technology-route combinations permitted by the technology table, evaluates each deterministically, and marks a scenario Pareto-optimal if no other scenario is at least as good in both annual economic surplus and screening net removal and strictly better in one. It does not use a weighted score or select a universal winner. The current implementation assigns the full solid output to one route per scenario; it does not optimise split allocations.")
 
     with st.expander("10. What is not currently modelled"):
         st.markdown("""

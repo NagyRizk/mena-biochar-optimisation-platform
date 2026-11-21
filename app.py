@@ -1,460 +1,834 @@
 import os
-import streamlit as st
+from dataclasses import replace, asdict
+from pathlib import Path
+import numpy as np
 import pandas as pd
+import streamlit as st
 import plotly.express as px
+import plotly.graph_objects as go
+import ui
+from ui import GREEN, AMBER, BLUE, RED, GREY, style_fig, header, section, kpis, chips
+from engine.models import ProcessInputs, EconomicInputs, calculate_technical, calculate_economics, MODEL_REGISTRY
+from engine.predict import BiocharPredictor, CLASSES, TARGETS, stable_fraction_from_hc
+from engine.design import FEEDSTOCKS, design_inputs, evaluate_design, search_designs, tornado
+from engine.processes import PROCESSES
+from engine.particle import ParticleParams, simulate_particle, verify_conduction
+from engine.pathways import pathways_df, SRC as PATH_SRC
+from engine.thermo import HAVE_COOLPROP
+from engine.mathdocs import BY_PAGE
+from ai.llm import ask, list_models, LLMError, DEFAULT_MODEL
 
-from engine.core import (
-    COUNTRY_SCENARIOS, FEEDSTOCKS, TECHNOLOGIES, ROUTES,
-    DEFAULT_COUNTRY, DEFAULT_FEEDSTOCK, PLANT_AVAILABILITY, APPLICATION_REQUIREMENTS,
-    evaluate_configuration, run_optimisation, application_gate, run_sensitivity
-)
-from explainability.engine import cost_revenue_breakdown, deterministic_reasons, scenario_comparison, model_validation_warning
-from ai.groq_analyst import explain_with_groq
+st.set_page_config(page_title="MENA Biochar Platform", page_icon="\u267b\ufe0f", layout="wide", initial_sidebar_state="expanded")
+ui.inject()
+S = st.session_state
 
-st.set_page_config(page_title="MENA Biochar Platform", page_icon="🌱", layout="wide")
-px.defaults.template = "plotly_white"
-px.defaults.color_discrete_sequence = ["#176b5b", "#d49a45", "#6d8fba", "#9a78a8", "#6f8580"]
-# Streamlit-hosted secrets are copied into the server environment for the AI module.
-if "GROQ_API_KEY" not in os.environ:
-    try:
-        if st.secrets.get("GROQ_API_KEY"):
-            os.environ["GROQ_API_KEY"] = str(st.secrets["GROQ_API_KEY"])
-        if st.secrets.get("GROQ_MODEL"):
-            os.environ["GROQ_MODEL"] = str(st.secrets["GROQ_MODEL"])
-    except Exception:
-        pass
-st.markdown("""
-<style>
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap');
-:root { --ink:#172b2a; --muted:#687b78; --green:#176b5b; --green2:#e7f1ed; --line:#e2e9e6; --paper:#f5f8f6; }
-html, body, [class*="css"] { font-family:'DM Sans',sans-serif; }
-.stApp { background:var(--paper); color:var(--ink); }
-[data-testid="stHeader"] { background:rgba(245,248,246,.92); }
-.block-container { max-width:1480px; padding-top:1.65rem; padding-bottom:3rem; }
-h1,h2,h3,h4 { font-family:'Manrope','DM Sans',sans-serif !important; color:var(--ink); letter-spacing:-.035em; }
-h1 { font-size:2rem !important; font-weight:800 !important; }
-h2 { font-size:1.5rem !important; font-weight:750 !important; }
-h3 { font-size:1.08rem !important; font-weight:700 !important; }
-p, label, .stCaption { color:#536663; }
-[data-testid="stSidebar"] { background:#fff; border-right:1px solid var(--line); }
-[data-testid="stSidebar"] > div:first-child { padding-top:1.2rem; }
-[data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 { letter-spacing:-.02em; }
-[data-testid="stMetric"] { background:#fff; border:1px solid var(--line); border-radius:14px; padding:18px 18px 15px; box-shadow:0 2px 8px rgba(20,55,47,.035); }
-[data-testid="stMetricLabel"] { color:var(--muted); font-size:.78rem; font-weight:600; }
-[data-testid="stMetricValue"] { color:var(--ink); font-family:'Manrope',sans-serif; font-size:1.65rem; font-weight:800; }
-[data-testid="stPlotlyChart"], [data-testid="stDataFrame"], [data-testid="stTable"] { background:#fff; border:1px solid var(--line); border-radius:14px; padding:10px; }
-[data-testid="stExpander"] { background:#fff; border:1px solid var(--line); border-radius:12px; margin-bottom:.55rem; }
-[data-testid="stExpander"] details summary { font-weight:650; color:var(--ink); }
-.stButton > button, .stDownloadButton > button, button[kind="primary"] { border-radius:9px; font-weight:650; min-height:2.65rem; }
-.stButton > button[kind="primary"], button[kind="primary"] { background:var(--green); border-color:var(--green); }
-.stButton > button:hover { border-color:var(--green); color:var(--green); }
-[data-testid="stAlert"] { border-radius:10px; }
-[data-testid="stTextInput"] input, [data-testid="stNumberInput"] input, [data-testid="stSelectbox"] div[data-baseweb="select"] { border-radius:8px; }
-hr { border-color:var(--line); }
-.brandbar { display:flex; align-items:center; gap:13px; padding:8px 0 20px; border-bottom:1px solid var(--line); margin-bottom:26px; }
-.brandmark { width:42px; height:42px; border-radius:12px; display:grid; place-items:center; background:#176b5b; color:white; font-size:21px; }
-.brandname { font-family:'Manrope',sans-serif; color:#172b2a; font-weight:800; font-size:1.13rem; letter-spacing:-.03em; }
-.brandmeta { color:#71827e; font-size:.76rem; margin-top:2px; }
-.eyebrow { color:#176b5b; text-transform:uppercase; letter-spacing:.12em; font-size:.68rem; font-weight:800; margin-bottom:6px; }
-.pagelead { color:#637571; font-size:.94rem; margin-top:-8px; margin-bottom:20px; max-width:900px; }
-.sidebar-note { background:#f1f6f3; border:1px solid #e0ebe5; border-radius:10px; padding:11px 12px; color:#536b63; font-size:.76rem; line-height:1.5; }
-[data-testid="stRadio"] label { font-weight:600; }
-</style>
-<div class="brandbar">
-  <div class="brandmark">🌱</div>
-  <div><div class="brandname">MENA Biochar Platform</div><div class="brandmeta">FEEDSTOCK → CONVERSION → MARKET · DECISION SUPPORT</div></div>
-</div>
-""", unsafe_allow_html=True)
+@st.cache_resource(show_spinner="Training the prediction models on the literature dataset (one-off, ~10 s)...")
+def get_predictor(): return BiocharPredictor.train(run_cv=True)
 
+@st.cache_data(show_spinner="Running particle simulation...")
+def sim_cached(pp_dict, t_end, dt): return simulate_particle(ParticleParams(**pp_dict), t_end, dt)
+
+@st.cache_data(show_spinner=False)
+def verification_cached(): return verify_conduction()
+
+# ------------------------------------------------------------------ state
+S.setdefault("process", ProcessInputs()); S.setdefault("economics", EconomicInputs(carbon_credit_usd_tco2e=0.0))
+S.setdefault("design", {"process": "slow_pyrolysis", "feed": "Date palm residues", "htt": 540.0, "dur": 120.0, "hr": 10.0, "liquid_share": 0.55})
+S.design.setdefault("process", "slow_pyrolysis")
+S.setdefault("yield_source", "Predicted (data-driven)")
+S.setdefault("particle", {"d": 20.0, "h": 50.0, "rho": 600.0, "kv": 0.15, "kc": 0.10, "cpv": 1500.0, "cpc": 1100.0, "lnA": 22.2, "E": 141.2, "dH": 0.0})
+S.setdefault("chat", {})
+PRED = lambda: S.yield_source.startswith("Predicted")
+PROC = lambda: PROCESSES[S.design["process"]]
+
+def fmt(v, unit=""):
+    if v is None or (isinstance(v, float) and np.isnan(v)): return "n/a"
+    return f"{v:,.0f}" if abs(v) >= 100 else f"{v:,.2f}"
+
+def get_key():
+    k = S.get("groq_key") or ""
+    if not k:
+        try: k = st.secrets.get("GROQ_API_KEY", "")
+        except Exception: k = ""
+    return k or os.environ.get("GROQ_API_KEY", "")
+
+def source_note(model_ids):
+    for mid in model_ids:
+        m = MODEL_REGISTRY[mid]
+        with st.expander(f"{mid} \u00b7 {m['name']}"):
+            st.write(m["method"]); st.code(m["equation"], language=None)
+            st.markdown(f"**Source:** [{m['source']}]({m['url']})"); st.caption(m["status"])
+
+def render_math(key):
+    for kind, text in BY_PAGE[key]:
+        (st.markdown if kind == "md" else st.latex)(text)
+
+def log_view(df, name):
+    st.dataframe(df, width="stretch", hide_index=True)
+    st.download_button("Download log (CSV)", df.to_csv(index=False).encode("utf-8"), f"{name}.csv", "text/csv", key=f"dl_{name}")
+    st.caption("Regenerated from the current inputs on every run. Each row names the equation, the inputs used and the model or assumption behind it.")
+
+# ------------------------------------------------------------------ scenario pipeline
+def set_process(name):
+    """Switch process type and reset temperature, residence time and particle defaults to that process."""
+    pr = PROCESSES[name]; d = S.design
+    d.update({"process": name, "htt": float(pr["T_default"]), "dur": float(pr["dur_default"])})
+    S.particle["d"], S.particle["h"] = pr["particle_defaults"]["d"], pr["particle_defaults"]["h"]
+    if not PRED(): S.process = replace(S.process, process_type=name)
+
+def current_scenario():
+    if PRED():
+        d = S.design
+        return design_inputs(get_predictor(), d["feed"], d["htt"], d["dur"], d["hr"], S.process, S.economics, d["liquid_share"], process=d["process"])
+    return replace(S.process, process_type=S.design["process"]), S.economics, None
+
+def make_pp(htt, yc, process=None):
+    q = S.particle; process = process or S.design["process"]
+    dd = q["d"] if process == S.design["process"] else PROCESSES[process]["particle_defaults"]["d"]
+    hh = q["h"] if process == S.design["process"] else PROCESSES[process]["particle_defaults"]["h"]
+    return ParticleParams(diameter_mm=dd, T_inf_C=float(htt), h_W_m2K=hh, char_mass_fraction=float(yc), k_virgin=q["kv"], k_char=q["kc"], rho_virgin=q["rho"],
+                          cp_virgin=q["cpv"], cp_char=q["cpc"], ln_A=q["lnA"], E_kJ_mol=q["E"], dH_J_kg=q["dH"])
+
+def pipeline():
+    p, e, pr = current_scenario(); proc = PROC()
+    pp = make_pp(p.reactor_temp_C, p.char_yield_dry); dur_s = S.design["dur"] * 60
+    sim = None
+    if proc["particle"] != "none":
+        t_end = float(min(max(dur_s, 600 if proc["particle"] == "full" else 1200), 14400))
+        sim = sim_cached(asdict(pp), t_end, 0.1 if t_end <= 600 else (0.5 if t_end <= 3600 else 1.0))
+    t = calculate_technical(p); ec = calculate_economics(t, p, e)
+    return dict(p=p, e=e, pr=pr, pp=pp, sim=sim, t=t, ec=ec, dur_min=S.design["dur"], proc=proc)
+
+def breakeven_carbon_price(ec, t):
+    rem = t["net_removal_proxy_tco2e_y"]
+    if rem <= 0: return None
+    return max(0.0, (ec["annualised_capex_usd_y"] + ec["operating_cost_usd_y"] - (ec["total_revenue_usd_y"] - ec["carbon_revenue_usd_y"])) / rem)
+
+def status_checks(R):
+    t, sim, pr, proc = R["t"], R["sim"], R["pr"], R["proc"]; c = []
+    c.append(("Mass balance closes", "ok" if abs(t["mass_balance_residual_t_y"]) < 1e-6 else "bad"))
+    c.append((f"Carbon balance: {t['carbon_retained_fraction']:.0%} of feed C in char", "ok" if t["carbon_balance_ok"] else "bad"))
+    if proc["particle"] == "full" and sim is not None:
+        if sim["t_target_s"] is None: c.append(("Particle never reaches 95% conversion", "bad"))
+        elif sim["t_target_s"] / 60 <= R["dur_min"]: c.append((f"Particle converts in {sim['t_target_s']/60:.2g} min (residence {R['dur_min']:.2g})", "ok"))
+        else: c.append((f"Particle needs {sim['t_target_s']/60:.2g} min > residence {R['dur_min']:.2g}", "bad"))
+    elif proc["particle"] == "heatup" and sim is not None:
+        c.append((f"Particle centre heated in {(sim['t_center_within_5K_s'] or float('nan'))/60:.2g} min", "ok" if sim["t_center_within_5K_s"] else "warn"))
+    else: c.append(("Particle model not applicable", "na"))
+    c.append(("Heat self-sufficient" if t["heat_deficit_GJ_y"] <= 0 else "External heat needed", "ok" if t["heat_deficit_GJ_y"] <= 0 else "warn"))
+    if proc.get("max_moisture") and R["p"].moisture_wet_basis > proc["max_moisture"]: c.append((f"Feed moisture above {proc['max_moisture']:.0%} limit", "bad"))
+    if S.design["process"] != "slow_pyrolysis": c.append(("Screening-level process data", "warn"))
+    elif pr and pr["extrapolating"]: c.append(("Predictor extrapolating", "warn"))
+    c.append((f"Solver verified ({verification_cached()['max_error_pct']:.2f}% vs analytical)", "ok" if verification_cached()["max_error_pct"] < 0.5 else "bad"))
+    return c
+
+def _r(o):
+    if isinstance(o, float): return float(f"{o:.4g}")
+    if isinstance(o, dict): return {k: _r(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)): return [_r(v) for v in o]
+    return o
+
+def snapshot(R, parts):
+    t, ec, p, sim, proc = R["t"], R["ec"], R["p"], R["sim"], R["proc"]
+    out = {"scenario": {"process": proc["label"], "process_status": proc["status"], "feedstock": S.design["feed"] if PRED() else "manual inputs", "HTT_C": p.reactor_temp_C, "residence_min": R["dur_min"]},
+           "status_checks": [f"{a} [{b}]" for a, b in status_checks(R)],
+           "assumption_status": "Costs, prices, carbon price, liquid/gas split, particle properties, feed carbon, HTC lines and the H/C permanence map are PLACEHOLDER or typical values, not sourced data."}
+    if "prediction" in parts and R["pr"]:
+        pr = R["pr"]; out["prediction"] = {"yield_pct": pr["Yield"], "carbon_pct": pr["C"], "H_C": pr["H_C"], "stable_fraction": p.stable_carbon_fraction, "extrapolating": pr["extrapolating"],
+                                            "cv_r2_yield": get_predictor().cv["Yield"]["r2"], "cv_r2_H_C": get_predictor().cv["H_C"]["r2"]}
+    if "technical" in parts:
+        keys = ["dry_feed_t_y", "feed_water_t_y", "slurry_water_t_y", "char_t_y", "liquid_t_y", "gas_t_y", "mass_balance_residual_t_y", "carbon_retained_fraction", "useful_process_heat_GJ_y", "purchased_heat_requirement_GJ_y",
+                "coproduct_chemical_energy_GJ_y", "recoverable_coproduct_heat_GJ_y", "heat_deficit_GJ_y", "heat_surplus_GJ_y", "net_removal_proxy_tco2e_y", "water_property_source"]
+        out["technical"] = {k: t[k] for k in keys}
+        if sim is not None: out["particle"] = {"diameter_mm": R["pp"].diameter_mm, "h_W_m2K": R["pp"].h_W_m2K, "t95_min": (sim["t_target_s"] or 0) / 60, "Biot": sim["Biot"], "regime": sim["regime"], "tau_heat_s": sim["tau_heat_s"], "tau_kin_s": sim["tau_kin_s"]}
+    if "economics" in parts:
+        out["economics"] = {k: ec[k] for k in ["total_revenue_usd_y", "operating_cost_usd_y", "ebitda_like_usd_y", "annualised_capex_usd_y", "annual_economic_surplus_usd_y", "npv_usd", "irr", "simple_payback_y", "carbon_revenue_usd_y", "char_revenue_usd_y"]}
+        out["economics"]["carbon_credit_price_usd_tco2e"] = R["e"].carbon_credit_usd_tco2e; out["economics"]["breakeven_carbon_price_usd_tco2e"] = breakeven_carbon_price(ec, t)
+    if "optimizer" in parts and S.get("opt"):
+        o = S.opt; keys = ["process", "feedstock", "HTT", "duration_min", "pred_yield_pct", "pred_H_C", "t95_min", "annual_economic_surplus_usd_y", "net_removal_proxy_tco2e_y"]
+        out["optimizer"] = {"stats": o["stats"], "objective": o["objective"], "best": {k: o["best"][k] for k in keys} if o["best"] else None, "n_feasible": len(o["rows"]), "n_pareto": len(o["front"])}
+    return _r(out)
+
+def ai_panel(page, snap, fallback=None):
+    section("AI engineering analyst")
+    if page == "Technical":
+        snap = dict(snap)
+        snap["governing_equations"] = [x[1] for x in BY_PAGE["technical"] if x[0] == "tex"]
+        snap.setdefault("calculation_log", [])
+        snap["analysis_instructions"] = "Explain actual calculations step by step. Refer to calculation-log rows by name, show the numerical drivers, distinguish assumptions from literature properties, identify dominant heat terms and flag model limitations. Do not merely restate KPI values."
+    key = get_key(); hist = S.chat.setdefault(page, [])
+    def run(q):
+        try:
+            with st.spinner("Thinking..."):
+                ans = ask(page, snap, q, key, S.get("groq_model") or DEFAULT_MODEL, history=[{"role": h["role"], "content": h["content"]} for h in hist])
+            hist.append({"role": "user", "content": q or "Explain this page"}); hist.append({"role": "assistant", "content": ans})
+        except LLMError as ex: st.error(str(ex))
+    with st.container(border=True):
+        if not key:
+            st.caption("Add a Groq API key in the sidebar to switch on the AI analyst for this page.")
+            for n in (fallback or []): st.markdown(f"- {n}")
+            return
+        c1, c2 = st.columns([1, 4])
+        if c1.button("Explain this page", key=f"ex_{page}", type="primary"): run(None)
+        with c2.form(f"ask_{page}", clear_on_submit=True, border=False):
+            q = st.text_input("Ask about these results", placeholder="e.g. Why is the optimum at this temperature?", label_visibility="collapsed", key=f"q_{page}")
+            if st.form_submit_button("Ask") and q: run(q)
+        for h in hist[-6:]:
+            with st.chat_message(h["role"]): st.markdown(h["content"])
+        if hist and st.button("Clear conversation", key=f"clr_{page}"): S.chat[page] = []; st.rerun()
+
+# ------------------------------------------------------------------ sidebar
+PAGES = ["Executive dashboard", "Rough estimates", "Technical", "Economic", "Optimize"]
 with st.sidebar:
-    st.markdown("### Workspace")
-    pages = ["Executive dashboard", "Technical", "Optimisation", "Sensitivity", "AI analyst"]
-    page = st.radio("Navigate", pages, label_visibility="collapsed")
-    st.divider()
-    st.markdown("### Scenario inputs")
-    country = st.selectbox("Country / market", list(COUNTRY_SCENARIOS), index=list(COUNTRY_SCENARIOS).index(DEFAULT_COUNTRY))
-    feedstock = st.selectbox("Feedstock", list(FEEDSTOCKS), index=list(FEEDSTOCKS).index(DEFAULT_FEEDSTOCK))
-    feed_tpy = st.number_input("Feedstock received · t/year", min_value=0.0, value=10000.0, step=500.0)
-    moisture = st.slider("Moisture · wet basis", 0.0, 0.80, 0.12, 0.01, format="%.0f%%")
-    transport_km = st.number_input("One-way transport · km", min_value=0.0, value=60.0, step=5.0)
-    availability = st.slider("Plant availability", 0.10, 1.00, float(PLANT_AVAILABILITY), 0.01, format="%.0f%%")
-    capex_mult = st.slider("CAPEX multiplier", 0.50, 2.00, 1.00, 0.05)
-    energy_mult = st.slider("Energy-demand multiplier", 0.50, 2.00, 1.00, 0.05)
+    st.markdown('<div class="brand">MENA Biochar<span>Engineering platform</span></div>', unsafe_allow_html=True)
+    st.write("")
+    page = st.radio("Navigation", PAGES, label_visibility="collapsed")
+    st.write("")
+    d_ = S.design
+    st.markdown(f'<div class="scn"><b>Active scenario</b><br>{PROCESSES[d_["process"]]["label"]}<br>{d_["feed"] if PRED() else "manual inputs"} \u00b7 {d_["htt"]:.0f} \u00b0C</div>', unsafe_allow_html=True)
+    st.write("")
+    with st.expander("AI analyst settings", expanded=not bool(get_key())):
+        st.text_input("Groq API key", type="password", key="groq_key", help="Kept only in this browser session. Or set GROQ_API_KEY / st.secrets.")
+        st.text_input("Model", value=DEFAULT_MODEL, key="groq_model")
+        if st.button("List available models") and get_key():
+            try: S.groq_models = list_models(get_key())
+            except LLMError as ex: st.error(str(ex))
+        if S.get("groq_models"): st.caption("Available: " + ", ".join(S.groq_models[:12]))
+    st.caption("Screening-level tool. Costs and several process inputs are placeholders; see the Assumptions tab.")
 
-    st.divider()
-    selected_tech = st.selectbox("Technology to customise", list(TECHNOLOGIES), index=list(TECHNOLOGIES).index("slow_pyrolysis"))
-    base_tech = TECHNOLOGIES[selected_tech]
-    st.caption("Changes recalculate the screening outputs automatically.")
-    with st.expander("Engineering assumptions", expanded=False):
-        custom_tech = {
-            "char_yield": st.number_input("Product yield · dry basis", 0.01, 0.95, float(base_tech["char_yield"]), 0.01),
-            "process_heat_GJ_t_dry": st.number_input("Process heat · GJ/t dry", 0.0, 20.0, float(base_tech["process_heat_GJ_t_dry"]), 0.1),
-            "electricity_kWh_t_dry": st.number_input("Electricity · kWh/t dry", 0.0, 2000.0, float(base_tech["electricity_kWh_t_dry"]), 5.0),
-            "capex_usd_per_tpy": st.number_input("Installed CAPEX · USD per t/y", 0.0, 20000.0, float(base_tech["capex_usd_per_tpy"]), 50.0),
-            "fixed_opex_fraction": st.number_input("Fixed OPEX / CAPEX", 0.0, 0.5, float(base_tech["fixed_opex_fraction"]), 0.01),
-            "char_C_fraction": st.number_input("Product carbon fraction", 0.0, 1.0, float(base_tech["char_C_fraction"]), 0.01),
-            "stable_C_fraction": st.number_input("Stable carbon fraction", 0.0, 1.0, float(base_tech["stable_C_fraction"]), 0.01),
-        }
-    base_market = COUNTRY_SCENARIOS[country].copy()
-    market_override = base_market.copy()
-    with st.expander("Commercial assumptions · USD", expanded=False):
-        market_override["feedstock_gate_usd_t"] = st.number_input("Feedstock purchase · USD/t", 0.0, 5000.0, float(base_market["feedstock_gate_usd_t"]), 1.0)
-        market_override["electricity_usd_kwh"] = st.number_input("Electricity · USD/kWh", 0.0, 5.0, float(base_market["electricity_usd_kwh"]), 0.01, format="%.3f")
-        market_override["heat_fuel_usd_GJ"] = st.number_input("Thermal energy · USD/GJ", 0.0, 500.0, float(base_market["heat_fuel_usd_GJ"]), 1.0)
-        market_override["labour_usd_t_y"] = st.number_input("Labour · USD/t dry", 0.0, 1000.0, float(base_market["labour_usd_t_y"]), 1.0)
-        market_override["logistics_usd_t_km"] = st.number_input("Transport · USD/t-km", 0.0, 5.0, float(base_market["logistics_usd_t_km"]), 0.01, format="%.3f")
-        market_override["char_price_usd_t"] = st.number_input("Product price · USD/t", 0.0, 10000.0, float(base_market["char_price_usd_t"]), 5.0)
-        market_override["demand_char_t_y"] = st.number_input("Annual product demand · t/y", 0.0, 10000000.0, float(base_market["demand_char_t_y"]), 500.0)
-    with st.expander("Project finance assumptions", expanded=False):
-        discount_rate = st.number_input("Discount rate", 0.0, 0.50, 0.12, 0.005, format="%.3f", help="Used in the capital recovery factor for annualised CAPEX.")
-        plant_life_y = st.number_input("Economic plant life · years", 1, 50, 15, 1)
-    route_overrides = {}
-    with st.expander("Market-route assumptions", expanded=False):
-        st.caption("Adjust route processing cost and the fraction of annual demand addressable through each route.")
-        for route_name, route_cfg in ROUTES.items():
-            st.markdown(f"**{route_name.replace('_', ' ').title()}**")
-            rc1, rc2 = st.columns(2)
-            route_overrides[route_name] = {
-                "route_cost_usd_t": rc1.number_input(f"Route cost · USD/t · {route_name}", 0.0, 5000.0, float(route_cfg["route_cost_usd_t"]), 1.0, key=f"route_cost_{route_name}"),
-                "demand_fraction": rc2.number_input(f"Addressable demand fraction · {route_name}", 0.0, 1.0, float(route_cfg["demand_fraction"]), 0.05, key=f"route_demand_{route_name}")
-            }
-    st.markdown('<div class="sidebar-note">Defaults are illustrative starting assumptions, not live quotations. Replace them with project data and supplier offers before investment decisions.</div>', unsafe_allow_html=True)
+# ------------------------------------------------------------------ input helpers
+def scenario_controls(prefix):
+    d = S.design; names = list(PROCESSES)
+    with st.container(border=True):
+        c0, c1 = st.columns([2, 3])
+        sel = c0.selectbox("Process", names, index=names.index(d["process"]), format_func=lambda n: PROCESSES[n]["label"], key=f"{prefix}_proc")
+        if sel != d["process"]: set_process(sel); st.rerun()
+        pr = PROCESSES[sel]
+        c1.markdown(f"<div class='small' style='padding-top:1.7rem'>{pr['desc']}</div>", unsafe_allow_html=True)
+        a, b, c, e_ = st.columns(4)
+        d["feed"] = a.selectbox("Feedstock", list(FEEDSTOCKS), index=list(FEEDSTOCKS).index(d["feed"]), key=f"{prefix}_feed")
+        lo, hi = pr["T"]; d["htt"] = float(b.slider("Temperature (\u00b0C)", lo, hi, int(min(max(d["htt"], lo), hi)), 10 if hi - lo >= 100 else 5, key=f"{prefix}_htt_{sel}"))
+        if pr["dur_options"]:
+            cur = int(d["dur"]) if int(d["dur"]) in pr["dur_options"] else pr["dur_options"][2]
+            d["dur"] = float(c.select_slider("Residence time (min)", list(pr["dur_options"]), value=cur, key=f"{prefix}_dur_{sel}"))
+        else: d["dur"] = float(c.number_input("Residence time (min)", 0.02, 600.0, float(d["dur"]), 0.5 if d["dur"] >= 1 else 0.05, key=f"{prefix}_durn_{sel}"))
+        if sel == "slow_pyrolysis":
+            d["hr"] = float(e_.slider("Heating rate (\u00b0C/min)", 5, 30, int(d["hr"]), key=f"{prefix}_hr"))
+            d["liquid_share"] = st.slider("Liquid share of non-char products (assumption, not predicted)", 0.0, 1.0, float(d["liquid_share"]), 0.05, key=f"{prefix}_ls")
+        else: e_.caption("Product split from published typical values; heating rate not a model input for this process.")
+    return d
 
-tech_overrides = {selected_tech: custom_tech}
-results, pareto = run_optimisation(country, feedstock, feed_tpy, moisture, transport_km, availability, capex_mult, energy_mult, market_override=market_override, technology_overrides=tech_overrides, discount_rate=discount_rate, plant_life_y=plant_life_y, route_overrides=route_overrides)
+def plant_inputs(p, prefix="pl"):
+    a, b, c = st.columns(3)
+    p.wet_feed_t_y = a.number_input("Wet feedstock (t/y)", min_value=1.0, value=float(p.wet_feed_t_y), step=500.0, key=prefix + "_wet")
+    p.feed_temp_C = a.number_input("Feed temperature (\u00b0C)", value=float(p.feed_temp_C), key=prefix + "_ft")
+    p.solid_cp_kJ_kgK = a.number_input("Dry solids cp (kJ/kg/K)", min_value=0.1, value=float(p.solid_cp_kJ_kgK), key=prefix + "_cp")
+    p.heat_loss_fraction = b.slider("Heat-loss fraction", 0.0, 0.6, float(p.heat_loss_fraction), 0.01, key=prefix + "_loss")
+    p.dryer_efficiency = b.slider("Heating efficiency", 0.1, 1.0, float(p.dryer_efficiency), 0.01, key=prefix + "_eff")
+    p.pyrolysis_enthalpy_kJ_kg_dry = b.number_input("Reaction heat (kJ/kg dry, endothermic +)", value=float(p.pyrolysis_enthalpy_kJ_kg_dry), step=50.0, key=prefix + "_dh")
+    p.recoverable_coproduct_heat_fraction = c.slider("Recoverable co-product heat", 0.0, 1.0, float(p.recoverable_coproduct_heat_fraction), 0.01, key=prefix + "_rec")
+    p.liquid_to_heat_fraction = c.slider("Liquid product diverted to process heat", 0.0, 1.0, float(p.liquid_to_heat_fraction), 0.05, key=prefix + "_liqheat", help="Diverted liquid is burned for heat and excluded from liquid sales revenue.")
+    p.gas_lhv_MJ_kg = c.number_input("Gas LHV (MJ/kg)", min_value=0.0, value=float(p.gas_lhv_MJ_kg), key=prefix + "_gl")
+    p.liquid_lhv_MJ_kg = c.number_input("Liquid LHV (MJ/kg)", min_value=0.0, value=float(p.liquid_lhv_MJ_kg), key=prefix + "_ll")
+    if S.design["process"] == "htc":
+        a, b = st.columns(2)
+        p.htc_water_to_dry_ratio = a.number_input("HTC slurry water per kg dry feed", 1.0, 30.0, float(p.htc_water_to_dry_ratio), 0.5, key=prefix + "_hw", help="Reviews report solid:water ratios of 1:5 to 1:25.")
+        p.htc_heat_recovery_fraction = b.slider("HTC heat-exchanger recovery", 0.0, 0.9, float(p.htc_heat_recovery_fraction), 0.05, key=prefix + "_hr_")
+    p.use_steam_tables = st.checkbox("Use IAPWS steam tables (CoolProp) for water", value=bool(p.use_steam_tables) and HAVE_COOLPROP, disabled=not HAVE_COOLPROP, key=prefix + "_st")
+    return p
 
+def particle_inputs():
+    q = S.particle; mode = PROC()["particle"]
+    if mode == "none": st.info("The particle model does not apply to hydrothermal carbonisation (wet, pressurised, different kinetics)."); return
+    if mode == "heatup": st.caption("For this process the particle model gives heat-up behaviour only; its kinetics are for pyrolysis devolatilisation.")
+    a, b, c = st.columns(3)
+    q["d"] = a.number_input("Particle diameter (mm)", min_value=0.5, max_value=100.0, value=float(q["d"]), step=0.5, key=f"pa_d_{S.design['process']}")
+    q["h"] = b.number_input("Surface heat-transfer coeff. h (W/m\u00b2/K)", min_value=5.0, max_value=2000.0, value=float(q["h"]), step=5.0, key=f"pa_h_{S.design['process']}", help="Lumped convection + radiation; reactor dependent (assumption).")
+    q["rho"] = c.number_input("Virgin density (kg/m\u00b3)", min_value=100.0, value=float(q["rho"]), step=25.0, key="pa_rho")
+    with st.expander("Particle properties and kinetics"):
+        a, b, c = st.columns(3)
+        q["kv"] = a.number_input("k virgin (W/m/K)", min_value=0.01, value=float(q["kv"]), key="pa_kv"); q["kc"] = a.number_input("k char (W/m/K)", min_value=0.01, value=float(q["kc"]), key="pa_kc")
+        q["cpv"] = b.number_input("cp virgin (J/kg/K)", min_value=500.0, value=float(q["cpv"]), key="pa_cpv"); q["cpc"] = b.number_input("cp char (J/kg/K)", min_value=500.0, value=float(q["cpc"]), key="pa_cpc")
+        q["lnA"] = c.number_input("ln A (1/s)", value=float(q["lnA"]), key="pa_lnA", help="Di Blasi & Branca 2001, beech wood: 22.2")
+        q["E"] = c.number_input("E (kJ/mol)", min_value=10.0, value=float(q["E"]), key="pa_E", help="Di Blasi & Branca 2001: 141.2")
+        q["dH"] = st.number_input("Particle reaction enthalpy (J/kg converted, endothermic +)", value=float(q["dH"]), step=10000.0, key="pa_dH")
+        st.caption("Kinetic defaults are for beech wood (573-708 K). Other feedstocks and higher temperatures are extrapolations.")
 
+def sankey(t):
+    labels = ["Wet feed", "Water", "Dry feed", "Biochar / solid", "Liquid", "Gas", "Other"]
+    src = [0, 0, 2, 2, 2, 2]; dst = [1, 2, 3, 4, 5, 6]
+    val = [t["feed_water_t_y"], t["dry_feed_t_y"], t["char_t_y"], t["liquid_t_y"], t["gas_t_y"], t["other_t_y"]]
+    keep = [i for i, v in enumerate(val) if v > 1e-9]
+    fig = go.Figure(go.Sankey(node=dict(label=labels, pad=18, thickness=14, color=["#33434d", "#6aa7d6", GREEN, "#2b2b2b", AMBER, GREY, "#c8c8c8"]),
+                    link=dict(source=[src[i] for i in keep], target=[dst[i] for i in keep], value=[val[i] for i in keep], color="rgba(127,140,150,.28)")))
+    return style_fig(fig, 300, legend=False)
+
+# ------------------------------------------------------------------ calculation logs
+def _fv(v):
+    if isinstance(v, (int, float, np.integer, np.floating)) and not isinstance(v, bool): return "n/a" if v != v else f"{v:,.6g}"
+    return str(v)
+
+def _row(rows, step, eq, inp, val, unit, model): rows.append({"Step": step, "Equation": eq, "Inputs": inp, "Result": _fv(val), "Unit": str(unit), "Model / source": model})
+
+def log_estimates(feed, cls, htt, dur, hr, r, sf, t0, ec0, process):
+    rows = []; pr = PROCESSES[process]
+    _row(rows, "Inputs", "x = [HTT, ln(1+t), heating rate, class]", f"{pr['label']}; {feed} -> class '{cls}'; HTT {htt} C; t {dur} min; beta {hr} C/min", "", "", "ML-001")
+    for k_, nm in [("Yield", "Char yield"), ("C", "Carbon in char"), ("Ash", "Ash"), ("H_C", "H/C")]:
+        v = r[k_]; _row(rows, nm, "mean over trees; sigma = std over trees", f"n_obs = {get_predictor().n_obs.get(k_, 'n/a')}", v["mean"], f"+/- {v['std']:.3g}", "ML-001" if process == "slow_pyrolysis" else f"{pr['yield_source']} / ML-001")
+    _row(rows, "Stable-C fraction", "interp(H/C -> f_stable)", f"H/C = {r['H_C']['mean']:.3f}", sf, "-", "PERM-001 (placeholder map)")
+    _row(rows, "Basis feed", "m_dry = m_wet (1 - Xw)", f"m_wet = 10,000 t/y", t0["dry_feed_t_y"], "t/y", "MASS-001")
+    _row(rows, "Biochar", "m_char = m_dry Y_char", "", t0["char_t_y"], "t/y", "MASS-001")
+    _row(rows, "Carbon retained", "C_char / C_feed", "", t0["carbon_retained_fraction"], "-", "carbon balance")
+    _row(rows, "Net removal proxy", "m_char c f_stable 44/12 - lifecycle", "", t0["net_removal_proxy_tco2e_y"], "t CO2e/y", "PERM-001")
+    _row(rows, "Economic surplus (placeholder prices)", "EBITDA - CAPEX_ann", "", ec0["annual_economic_surplus_usd_y"], "USD/y", "ECON-001")
+    return pd.DataFrame(rows)
+
+def log_technical(R):
+    p, t, pp, sim, pr = R["p"], R["t"], R["pp"], R["sim"], R["pr"]; rows = []; add = lambda *a: _row(rows, *a)
+    ysrc = "ML-001 (predicted)" if (pr and S.design["process"] == "slow_pyrolysis") else (R["proc"]["yield_source"] if pr else "user input")
+    add("Process", "-", R["proc"]["label"], 0, "", R["proc"]["status"])
+    add("Dry feed", "m_dry = m_wet (1 - Xw)", f"{p.wet_feed_t_y:,.6g} x (1 - {p.moisture_wet_basis:.6g})", t["dry_feed_t_y"], "t/y", "MASS-001")
+    add("Feed water", "m_w = m_wet - m_dry", f"{p.wet_feed_t_y:,.6g} - {t['dry_feed_t_y']:,.6g}", t["feed_water_t_y"], "t/y", "MASS-001")
+    if p.process_type == "htc": add("Slurry water", "max(rho_w m_dry, m_w)", f"rho_w = {p.htc_water_to_dry_ratio}", t["slurry_water_t_y"], "t/y", "HTC energy balance")
+    add("Char / hydrochar", "m_char = m_dry Y_char", f"{t['dry_feed_t_y']:,.6g} x {p.char_yield_dry:.6g}; yield source: {ysrc}", t["char_t_y"], "t/y", "MASS-001")
+    add("Liquid", "m_liq = m_dry Y_liq", f"Y_liq = {p.liquid_yield_dry:.3f}", t["liquid_t_y"], "t/y", "process split")
+    add("Gas", "m_gas = m_dry Y_gas", f"Y_gas = {p.gas_yield_dry:.3f}", t["gas_t_y"], "t/y", "process split")
+    add("Mass residual", "m_dry - sum(products)", "", t["mass_balance_residual_t_y"], "t/y", "MASS-001")
+    add("Feed carbon", "C_feed = m_dry x_C", f"{t['dry_feed_t_y']:.6g} t/y x {p.feed_carbon_fraction_dry:.6g} (typical, unsourced)", t["feed_carbon_t_y"], "t C/y", "assumption")
+    add("Char carbon", "C_char = m_char c_char", f"{t['char_t_y']:.6g} t/y x {p.char_carbon_fraction:.6g}", t["char_carbon_t_y"], "t C/y", "ML-001 / process table")
+    add("Carbon retained in char", "C_char / C_feed (must be <= 1)", "", t["carbon_retained_fraction"], "-", "carbon balance")
+    add("Water sensible heat", "m_w (h_f - h_in)" if p.process_type != "htc" else "m_slurry (h_f(Tr) - h_in)", f"mass={t['slurry_water_t_y'] if p.process_type == 'htc' else t['feed_water_t_y']:.6g} t/y; T_in={p.feed_temp_C:.6g} C; T_r={p.reactor_temp_C:.6g} C; source={t['water_property_source']}", t["water_sensible_GJ_y"], "GJ/y", "ENERGY-001")
+    add("Water vaporisation", "m_w h_fg (0 for HTC)", f"{t['feed_water_t_y']:.6g} t/y x {p.water_latent_kJ_kg:.6g} kJ/kg; 1 atm" if p.process_type != "htc" else "HTC: no phase change", t["water_vaporisation_GJ_y"], "GJ/y", "ENERGY-001")
+    add("Steam superheat", "m_w (h(T_r) - h_g) (0 for HTC)", f"m_w={t['feed_water_t_y']:.6g} t/y; T_r={p.reactor_temp_C:.6g} C; cp_v={p.steam_cp_kJ_kgK:.6g}", t["steam_superheat_GJ_y"], "GJ/y", "ENERGY-001")
+    add("Solids sensible heat", "m_dry cp (T_r - T_in)", f"{t['dry_feed_t_y']:,.6g} t/y x {p.solid_cp_kJ_kgK:.6g} kJ/kg/K x ({p.reactor_temp_C:.6g}-{p.feed_temp_C:.6g}) K", t["solids_sensible_GJ_y"], "GJ/y", "ENERGY-001")
+    add("Reaction heat", "m_dry dH", f"{t['dry_feed_t_y']:,.6g} t/y x {p.pyrolysis_enthalpy_kJ_kg_dry:.6g} kJ/kg (user input)", t["reaction_heat_GJ_y"], "GJ/y", "assumption")
+    add("Useful process heat", "sum (x (1 - eps_hx) for HTC)", "", t["useful_process_heat_GJ_y"], "GJ/y", "ENERGY-001")
+    add("Gross heat duty", "Q_useful / (1 - f_loss)", f"{t['useful_process_heat_GJ_y']:.6g} / (1 - {p.heat_loss_fraction:.6g})", t["gross_heat_duty_GJ_y"], "GJ/y", "ENERGY-001")
+    add("Purchased heat requirement", "Q_gross / eta", f"{t['gross_heat_duty_GJ_y']:.6g} / {p.dryer_efficiency:.6g}", t["purchased_heat_requirement_GJ_y"], "GJ/y", "ENERGY-001")
+    add("Co-product chemical energy", "m_gas LHV_g + m_liq LHV_l", f"gas={t['gas_t_y']:.6g} t/y x {p.gas_lhv_MJ_kg:.6g}; liquid-to-heat={p.liquid_to_heat_fraction:.6g} x {t['liquid_t_y']:.6g} t/y x {p.liquid_lhv_MJ_kg:.6g} MJ/kg", t["coproduct_chemical_energy_GJ_y"], "GJ/y", "assumption")
+    add("Recoverable heat", "f_rec x chemical energy", f"{t['coproduct_chemical_energy_GJ_y']:.6g} x {p.recoverable_coproduct_heat_fraction:.6g}", t["recoverable_coproduct_heat_GJ_y"], "GJ/y", "assumption")
+    add("Liquid diverted to heat", "m_liquid x f_liquid_to_heat x LHV", f"diverted = {p.liquid_to_heat_fraction:.0%}; excluded from sales", t["liquid_to_heat_energy_GJ_y"], "GJ/y", "user allocation")
+    add("Heat deficit (+) / surplus (-)", "purchased - recoverable", "", t["heat_deficit_GJ_y"] - t["heat_surplus_GJ_y"], "GJ/y", "ENERGY-001")
+    add("Stored CO2 (gross)", "m_char c f_stable 44/12", f"{t['char_t_y']:.6g} x {p.char_carbon_fraction:.6g} x {p.stable_carbon_fraction:.6g} x 44/12", t["gross_stored_co2_t_y"], "t CO2/y", "PERM-001")
+    add("Net removal proxy", "gross - lifecycle", f"lifecycle = {p.lifecycle_emissions_tco2e_y} (not modelled)", t["net_removal_proxy_tco2e_y"], "t CO2e/y", "screening proxy")
+    if sim is not None:
+        add("Biot number", "h R / k", f"h = {pp.h_W_m2K}, R = {pp.diameter_mm/2:.2f} mm, k = {pp.k_virgin}", sim["Biot"], "-", "PART-001")
+        add("Thermal time scale", "R^2 / (pi^2 alpha)", "", sim["tau_heat_s"], "s", "PART-001")
+        add("Kinetic time scale", "ln(1/(1-X)) / k(T_inf)", f"E = {pp.E_kJ_mol}, ln A = {pp.ln_A}", sim["tau_kin_s"], "s", "KIN-001")
+        add("Time to 95% conversion", "mass-average virgin consumed", f"{sim['cells']} cells, dt = {sim['dt_s']} s", (sim["t_target_s"] or float("nan")), "s", "PART-001")
+    return pd.DataFrame(rows)
+
+def log_economic(R):
+    ec, e, t = R["ec"], R["e"], R["t"]; rows = []; add = lambda *a: _row(rows, *a)
+    add("Capital recovery factor", "i(1+i)^n / ((1+i)^n - 1)", f"i = {e.discount_rate:.3f}, n = {e.project_life_y}", ec["crf"], "-", "ECON-001")
+    add("Annualised CAPEX", "CAPEX x CRF x a", f"CAPEX = {e.capex_usd:,.0f} USD; a = {e.annualisation_fraction}", ec["annualised_capex_usd_y"], "USD/y", "ECON-001")
+    add("Feedstock + logistics", "m_wet (c_feed + c_log)", f"{t['wet_feed_t_y']:,.0f} t/y x ({e.feedstock_cost_usd_t_wet} + {e.logistics_cost_usd_t_wet})", ec["feedstock_logistics_cost_usd_y"], "USD/y", "placeholder prices")
+    add("Electricity", "m_dry x kWh/t x price", f"{e.electricity_use_kwh_t_dry} kWh/t dry; {e.electricity_price_usd_kwh} USD/kWh", ec["electricity_cost_usd_y"], "USD/y", "placeholder")
+    add("Purchased heat", "Q_deficit x price", f"{t['heat_deficit_GJ_y']:,.0f} GJ/y x {e.purchased_heat_price_usd_GJ}", ec["purchased_heat_cost_usd_y"], "USD/y", "ECON-001")
+    add("Maintenance", "f_maint x CAPEX", f"f = {e.maintenance_fraction_capex_y}", ec["maintenance_usd_y"], "USD/y", "placeholder")
+    add("Labour + other OPEX", "L + O", "", ec["labour_usd_y"] + ec["other_opex_usd_y"], "USD/y", "placeholder")
+    add("Operating cost", "sum of the above", "", ec["operating_cost_usd_y"], "USD/y", "ECON-001")
+    add("Biochar revenue", "m_char x price", f"{t['char_t_y']:,.1f} t/y x {e.char_price_usd_t}", ec["char_revenue_usd_y"], "USD/y", "placeholder price")
+    add("Liquid revenue", "m_liq x price", f"{t['liquid_t_y']:,.1f} t/y x {e.liquid_price_usd_t}", ec["liquid_revenue_usd_y"], "USD/y", "placeholder price")
+    add("Electricity export revenue", "Q_surplus x 277.78 x eta_el x f_export x price", f"surplus {t['heat_surplus_GJ_y']:,.0f} GJ/y", ec["electricity_revenue_usd_y"], "USD/y", "ECON-001")
+    add("Carbon revenue", "max(0, CO2_net) x p_C", f"{t['net_removal_proxy_tco2e_y']:,.0f} t x {e.carbon_credit_usd_tco2e}", ec["carbon_revenue_usd_y"], "USD/y", "scenario assumption")
+    add("EBITDA-like", "R - OPEX", "", ec["ebitda_like_usd_y"], "USD/y", "ECON-001")
+    add("Economic surplus", "EBITDA - CAPEX_ann", "", ec["annual_economic_surplus_usd_y"], "USD/y", "ECON-001")
+    add("NPV", "-CAPEX + sum EBITDA/(1+i)^t", "", ec["npv_usd"], "USD", "ECON-001")
+    add("IRR", "root of NPV(r) = 0", "", ec["irr"] if ec["irr"] is not None else float("nan"), "-", "ECON-001")
+    add("Simple payback", "CAPEX / EBITDA", "", ec["simple_payback_y"] if ec["simple_payback_y"] is not None else float("nan"), "y", "ECON-001")
+    be = breakeven_carbon_price(ec, t); add("Breakeven carbon price", "(CAPEX_ann + OPEX - (R - R_carbon)) / CO2_net", "", be if be is not None else float("nan"), "USD/tCO2e", "derived")
+    return pd.DataFrame(rows)
+
+def log_optimize(o, constrain, use_particle, safety):
+    rows = []; st_ = o["stats"]
+    for pn in o["processes"]:
+        pr = PROCESSES[pn]; lo, hi = ((300, 800) if pn == "slow_pyrolysis" else pr["T"])
+        _row(rows, f"Grid: {pr['label']}", "T x residence x heating rate" if pn == "slow_pyrolysis" else "T only", f"T {lo}-{hi} C; residence {'15,30,60,120,240' if pn == 'slow_pyrolysis' else pr['dur_default']} min", "", "", pr["yield_source"])
+    _row(rows, "Designs evaluated", "count", "", st_["evaluated"], "", "DESIGN-001")
+    _row(rows, f"Constraint: H/C <= {o.get('max_hc', 0.7):.2f}", "reject if H/C above limit", "on" if constrain else "off", st_["rejected_hc"], "rejected", "PERM-001")
+    _row(rows, "Constraint: particle conversion", "reject if t_res < s x t95", f"s = {safety}" if use_particle else "off", st_["rejected_conversion"], "rejected", "PART-001")
+    _row(rows, "Constraint: carbon balance", "reject if C_char / C_feed > 1", "", st_["rejected_carbon"], "rejected", "carbon balance")
+    _row(rows, "Feasible designs", "count", "", len(o["rows"]), "", "DESIGN-001")
+    _row(rows, "Pareto front", "non-dominated in (surplus, removal)", "", len(o["front"]), "designs", "DESIGN-001")
+    _row(rows, "Objective", o["objective"], f"carbon price {o['cc']} USD/tCO2e", "", "", "DESIGN-001")
+    if o["best"]:
+        b = o["best"]; _row(rows, "Best design", "argmin / argmax of objective", f"{b['process']}, {b['feedstock']}, {b['HTT']:.0f} C, {b['duration_min']:.3g} min", b["annual_economic_surplus_usd_y"], "USD/y surplus", "DESIGN-001")
+    t95 = {}
+    for r_ in o["rows"]:
+        if r_["t95_min"] is not None: t95[(r_["process"], r_["HTT"])] = r_["t95_min"]
+    for (pn, h), v in sorted(t95.items())[:40]: _row(rows, f"Particle t95 ({pn})", "PART-001 simulation", f"T = {h:.0f} C", v, "min", "PART-001")
+    return pd.DataFrame(rows)
+
+def assumptions_table(R):
+    p, e, pp, pr = R["p"], R["e"], R["pp"], R["pr"]; proc = R["proc"]
+    rows = [("Process", proc["label"], proc["status"], "Screening" if S.design["process"] != "slow_pyrolysis" else "Data-driven"),
+            ("Char yield, C, H/C", f"{p.char_yield_dry:.3f}, {p.char_carbon_fraction:.2f}, stable {p.stable_carbon_fraction:.2f}", "ML-001 / process table; stable fraction from placeholder map (PERM-001)" if pr else "User input", "Data-driven / placeholder"),
+            ("Liquid / gas split", f"liquid {p.liquid_yield_dry:.2f}, gas {p.gas_yield_dry:.2f}", "Assumption (slow pyrolysis) or published typical split", "Assumption / typical"),
+            ("Feed moisture", f"{p.moisture_wet_basis:.2f}", "Typical value for preset feedstock", "Typical, unsourced"),
+            ("Feed carbon fraction (dry)", f"{p.feed_carbon_fraction_dry:.2f}", "Typical value for preset feedstock", "Typical, unsourced"),
+            ("Water properties", R["t"]["water_property_source"], "IAPWS-95", "Literature (verified)"),
+            ("Solids cp", f"{p.solid_cp_kJ_kgK} kJ/kg/K", "Constant; no temperature dependence", "Typical"),
+            ("Heat loss / efficiency", f"{p.heat_loss_fraction:.2f} / {p.dryer_efficiency:.2f}", "User input", "Assumption"),
+            ("Reaction heat", f"{p.pyrolysis_enthalpy_kJ_kg_dry} kJ/kg", "Default 0 (neglected)", "Assumption")]
+    if S.design["process"] == "htc": rows += [("HTC slurry water / heat recovery", f"{p.htc_water_to_dry_ratio} kg/kg / {p.htc_heat_recovery_fraction:.2f}", "Review range 1:5-1:25; recovery is an assumption", "Assumption"),
+                                               ("HTC yield and char lines", "linear in T", "35-65% yield range from reviews mapped to 260-180 C; C and H/C unsourced", "Screening")]
+    if S.design["process"] != "htc": rows += [("Particle kinetics", f"E = {pp.E_kJ_mol}, ln A = {pp.ln_A}", "Di Blasi & Branca (2001), beech wood, 573-708 K", "Literature (verified), extrapolated"),
+                                              ("Particle properties", f"k {pp.k_virgin}/{pp.k_char}, cp {pp.cp_virgin:.0f}/{pp.cp_char:.0f}, rho {pp.rho_virgin:.0f}", "Typical wood/char values", "Typical, unsourced"),
+                                              ("Surface heat-transfer coeff.", f"{pp.h_W_m2K} W/m2/K; d = {pp.diameter_mm} mm", "User input; reactor dependent", "Assumption")]
+    rows += [("Prices, CAPEX, labour", f"char {e.char_price_usd_t} USD/t; liquid {e.liquid_price_usd_t} USD/t; CAPEX {e.capex_usd:,.0f} USD", "Placeholders; CAPEX is not process-specific", "Placeholder"),
+             ("Carbon credit price", f"{e.carbon_credit_usd_tco2e} USD/tCO2e", "Scenario assumption; removal not verified", "Assumption")]
+    return pd.DataFrame(rows, columns=["Item", "Value", "Basis", "Status"])
+def process_inputs(prefix="p"):
+    p=st.session_state.process
+    a,b,c=st.columns(3)
+    with a:
+        p.wet_feed_t_y=st.number_input("Wet feedstock (t/y)",min_value=1.0,value=float(p.wet_feed_t_y),step=500.0,key=prefix+"_wet")
+        p.moisture_wet_basis=st.slider("Feed moisture (wet basis)",0.0,0.85,float(p.moisture_wet_basis),0.01,key=prefix+"_moist")
+        p.feed_temp_C=st.number_input("Feed temperature (°C)",value=float(p.feed_temp_C),key=prefix+"_feedtemp")
+    with b:
+        p.reactor_temp_C=st.number_input("Reactor temperature (°C)",min_value=101.0,max_value=1000.0,value=float(p.reactor_temp_C),key=prefix+"_reacttemp")
+        p.char_yield_dry=st.slider("Char yield (dry basis)",0.0,1.0,float(p.char_yield_dry),0.01,key=prefix+"_char")
+        p.liquid_yield_dry=st.slider("Liquid yield (dry basis)",0.0,1.0,float(p.liquid_yield_dry),0.01,key=prefix+"_liquid")
+    with c:
+        p.gas_yield_dry=st.slider("Gas yield (dry basis)",0.0,1.0,float(p.gas_yield_dry),0.01,key=prefix+"_gas")
+        p.other_yield_dry=st.slider("Other / unallocated fraction",0.0,1.0,float(p.other_yield_dry),0.01,key=prefix+"_other")
+        p.heat_loss_fraction=st.slider("Heat-loss fraction",0.0,0.6,float(p.heat_loss_fraction),0.01,key=prefix+"_loss")
+    if abs(p.char_yield_dry+p.liquid_yield_dry+p.gas_yield_dry+p.other_yield_dry-1)>1e-6:
+        st.error(f"Dry product fractions sum to {p.char_yield_dry+p.liquid_yield_dry+p.gas_yield_dry+p.other_yield_dry:.3f}, not 1. Adjust them before calculating.")
+    p.solid_cp_kJ_kgK=st.number_input("Dry solids Cp (kJ/kg·K)",min_value=0.01,value=float(p.solid_cp_kJ_kgK),key=prefix+"_cps")
+    p.dryer_efficiency=st.slider("Dryer / heating efficiency",0.1,1.0,float(p.dryer_efficiency),0.01,key=prefix+"_eff")
+    p.gas_lhv_MJ_kg=st.number_input("Gas LHV (MJ/kg)",min_value=0.0,value=float(p.gas_lhv_MJ_kg),key=prefix+"_gaslhv")
+    p.liquid_lhv_MJ_kg=st.number_input("Liquid LHV (MJ/kg)",min_value=0.0,value=float(p.liquid_lhv_MJ_kg),key=prefix+"_liqLHV")
+    p.recoverable_coproduct_heat_fraction=st.slider("Recoverable coproduct heat fraction",0.0,1.0,float(p.recoverable_coproduct_heat_fraction),0.01,key=prefix+"_recovery")
+    p.liquid_to_heat_fraction=st.slider("Liquid product diverted to process heat",0.0,1.0,float(p.liquid_to_heat_fraction),0.05,key=prefix+"_liqheat",help="Diverted liquid is burned for heat and excluded from liquid sales revenue.")
+    return p
+
+def econ_inputs(prefix="e"):
+    e=st.session_state.economics
+    a,b,c=st.columns(3)
+    with a:
+        e.capex_usd=st.number_input("Installed CAPEX (USD)",min_value=0.0,value=float(e.capex_usd),step=100000.0,key=prefix+"_capex")
+        e.project_life_y=st.number_input("Project life (years)",min_value=1,max_value=50,value=int(e.project_life_y),key=prefix+"_life")
+        e.discount_rate=st.number_input("Discount rate",min_value=0.0,max_value=0.99,value=float(e.discount_rate),step=0.01,key=prefix+"_rate")
+    with b:
+        e.feedstock_cost_usd_t_wet=st.number_input("Feedstock cost (USD/wet t)",min_value=0.0,value=float(e.feedstock_cost_usd_t_wet),key=prefix+"_feedcost")
+        e.logistics_cost_usd_t_wet=st.number_input("Logistics (USD/wet t)",min_value=0.0,value=float(e.logistics_cost_usd_t_wet),key=prefix+"_log")
+        e.char_price_usd_t=st.number_input("Biochar price (USD/t)",min_value=0.0,value=float(e.char_price_usd_t),key=prefix+"_charprice")
+    with c:
+        e.liquid_price_usd_t=st.number_input("Liquid product price (USD/t)",min_value=0.0,value=float(e.liquid_price_usd_t),key=prefix+"_liqprice")
+        e.electricity_price_usd_kwh=st.number_input("Electricity tariff (USD/kWh)",min_value=0.0,value=float(e.electricity_price_usd_kwh),key=prefix+"_elec")
+        e.labour_usd_y=st.number_input("Annual labour (USD/y)",min_value=0.0,value=float(e.labour_usd_y),key=prefix+"_labour")
+    e.other_opex_usd_y=st.number_input("Other annual OPEX (USD/y)",min_value=0.0,value=float(e.other_opex_usd_y),key=prefix+"_otheropex")
+    e.maintenance_fraction_capex_y=st.number_input("Maintenance fraction of CAPEX / y",min_value=0.0,max_value=0.5,value=float(e.maintenance_fraction_capex_y),step=0.005,key=prefix+"_maint")
+    e.electricity_use_kwh_t_dry=st.number_input("Electricity use (kWh/dry t)",min_value=0.0,value=float(e.electricity_use_kwh_t_dry),key=prefix+"_elecuse")
+    e.purchased_heat_price_usd_GJ=st.number_input("Purchased heat price (USD/GJ)",min_value=0.0,value=float(e.purchased_heat_price_usd_GJ),key=prefix+"_heatprice")
+    e.carbon_credit_usd_tco2e=st.number_input("Carbon credit price (USD/tCO2e) - scenario assumption",min_value=0.0,value=float(e.carbon_credit_usd_tco2e),step=5.0,key=prefix+"_cc",help="Only meaningful if removal is verified and creditable. The platform removal figure is a screening proxy.")
+    return e
+
+def tech_kpis(R):
+    t, ec, p = R["t"], R["ec"], R["p"]; be = breakeven_carbon_price(ec, t)
+    kpis([("Biochar / solid", fmt(t["char_t_y"]), "per year", "t"), ("Removal proxy", fmt(t["net_removal_proxy_tco2e_y"]), "screening, not creditable", "tCO\u2082e/y"),
+          ("Economic surplus", fmt(ec["annual_economic_surplus_usd_y"]), "after capital recovery", "USD/y"), ("NPV", fmt(ec["npv_usd"]), "placeholder prices", "USD"),
+          ("Breakeven carbon price", fmt(be) if be is not None else "n/a", "surplus = 0", "USD/t"), ("Stable carbon", f"{p.stable_carbon_fraction:.2f}", "fraction of char C")])
+
+# ================================================================== EXECUTIVE DASHBOARD
 if page == "Executive dashboard":
-    st.markdown('<div class="eyebrow">Portfolio overview</div>', unsafe_allow_html=True)
-    st.header("Executive decision dashboard")
-    st.markdown('<div class="pagelead">A decision-focused summary of production, indicative project economics and carbon-removal screening. Adjust the assumptions in the left panel to test alternative cases.</div>', unsafe_allow_html=True)
-    if results.empty:
-        st.warning("No feasible configurations were returned for these inputs.")
-    else:
-        best_margin = results.sort_values("annual_margin_usd_y", ascending=False).iloc[0]
-        best_cdr = results.sort_values("net_removal_tCO2py", ascending=False).iloc[0]
-        pareto_count = int(results["pareto_optimal"].sum())
-        c1,c2,c3,c4 = st.columns(4)
-        c1.metric("Best annual economic surplus", f"${best_margin.annual_economic_surplus_usd_y:,.0f}", help="Total revenue less operating costs and annualised capital recovery; not EBITDA.")
-        c2.metric("Highest CDR screening estimate", f"{best_cdr.net_removal_tCO2py:,.0f} tCO₂/y", help="Screening proxy only; not verified carbon removal or creditable tonnes.")
-        c3.metric("Pareto-efficient options", f"{pareto_count}", help="Options not dominated on both margin and screening removal.")
-        c4.metric("Dry feed throughput", f"{best_margin.dry_feed_tpy:,.0f} t/y")
+    header("Executive dashboard", "Research-derived engineering and commercial intelligence: feedstocks, operating conditions, product quality, plant design evidence and economics.")
+    chars = pd.read_csv(Path(__file__).parent / "data" / "biochar_production_characteristics_202404.csv")
+    bib = pd.read_csv(Path(__file__).parent / "data" / "biochar_production_bibliography_202404.csv")
+    numeric = ["HTT", "Pyrolysis_duration", "Heating_rate", "Yield", "Fixed_C", "Ash", "C", "H_C", "O_C", "Volatile_matter"]
+    for col in numeric:
+        chars[col] = pd.to_numeric(chars[col], errors="coerce")
+    chars["Publication year"] = pd.to_numeric(chars["Publication year"], errors="coerce")
 
-        if best_margin.annual_economic_surplus_usd_y < 0:
-            st.warning("**Current case is below break-even.** This is a result of the assumptions shown in the sidebar, not proof that the technology is inherently unviable. Test feedstock cost, selling price, demand, energy costs, CAPEX, discount rate and plant life against supplier quotations and offtake evidence.")
+    # Filters select evidence, not a simulated plant scenario.
+    f1, f2 = st.columns(2)
+    process_options = sorted(chars.Pyrolysis_type.dropna().unique().tolist())
+    class_options = sorted(chars.Feedstock_class.dropna().unique().tolist())
+    with f1:
+        selected_process = st.multiselect("Conversion route", process_options, default=["slow"] if "slow" in process_options else process_options)
+    with f2:
+        selected_classes = st.multiselect("Feedstock families", class_options, default=class_options)
+    view = chars[chars.Pyrolysis_type.isin(selected_process) & chars.Feedstock_class.isin(selected_classes)].copy()
+    if view.empty:
+        st.warning("No experimental records match these filters. Select another route or feedstock family.")
+        st.stop()
+
+    section("What the experimental evidence reports")
+    a, b, c, d = st.columns(4)
+    a.metric("Observed char yield", f"{view.Yield.median():.1f} wt%", f"IQR {view.Yield.quantile(.25):.1f}–{view.Yield.quantile(.75):.1f}%" if view.Yield.notna().any() else None)
+    b.metric("Biochar carbon", f"{view.C.median():.1f} wt%", "median of reported values")
+    c.metric("Ash content", f"{view.Ash.median():.1f} wt%", "median of reported values")
+    d.metric("H/C molar ratio", f"{view.H_C.median():.2f}", "lower values generally indicate greater carbonisation")
+    st.caption(f"Filtered evidence: {len(view):,} experimental rows from {view.Title.nunique():,} distinct publications. These are distributions across heterogeneous studies, not guaranteed plant performance or a single pooled design recommendation.")
+
+    tabs = st.tabs(["Feedstock performance", "Process & operating window", "Biochar quality", "Plant design implications", "Economics & commercial evidence", "Sources & evidence"])
+    with tabs[0]:
+        section("How feedstock families compare")
+        agg = view.groupby("Feedstock_class").agg(Records=("Feedstock", "size"), Feedstocks=("Feedstock", "nunique"), Yield_median=("Yield", "median"), Yield_q25=("Yield", lambda x: x.quantile(.25)), Yield_q75=("Yield", lambda x: x.quantile(.75)), Carbon_median=("C", "median"), Ash_median=("Ash", "median"), H_C_median=("H_C", "median")).reset_index()
+        agg = agg.rename(columns={"Feedstock_class":"Feedstock family", "Yield_median":"Yield median (wt%)", "Yield_q25":"Yield Q25", "Yield_q75":"Yield Q75", "Carbon_median":"Char C median (wt%)", "Ash_median":"Ash median (wt%)", "H_C_median":"H/C median"})
+        st.dataframe(agg.sort_values("Yield median (wt%)", ascending=False), width="stretch", hide_index=True)
+        fig = px.box(view.dropna(subset=["Yield"]), x="Feedstock_class", y="Yield", points="outliers", title="Reported char-yield distribution by feedstock family")
+        st.plotly_chart(style_fig(fig, 390, legend=False), width="stretch")
+        st.markdown("**Interpretation:** compare both yield and quality. A high char yield alone does not establish the best feedstock: ash, carbon content, H/C, contamination, moisture, availability and competing uses also matter. The dataset does not provide a representative Egypt-wide supply census or delivered feedstock costs.")
+        st.markdown("**Feedstock-level lookup**")
+        feed_summary = view.groupby("Feedstock").agg(Records=("ID", "count"), Yield=("Yield", "median"), Carbon=("C", "median"), Ash=("Ash", "median"), H_C=("H_C", "median"), HTT=("HTT", "median")).reset_index().sort_values("Records", ascending=False).head(40)
+        st.dataframe(feed_summary, width="stretch", hide_index=True)
+    with tabs[1]:
+        section("Reported operating conditions")
+        cond = view.groupby("Pyrolysis_type").agg(Records=("ID", "count"), HTT_median_C=("HTT", "median"), HTT_Q25=("HTT", lambda x:x.quantile(.25)), HTT_Q75=("HTT", lambda x:x.quantile(.75)), Residence_median_min=("Pyrolysis_duration", "median"), Residence_Q25=("Pyrolysis_duration", lambda x:x.quantile(.25)), Residence_Q75=("Pyrolysis_duration", lambda x:x.quantile(.75)), Heating_rate_median_C_min=("Heating_rate", "median")).reset_index()
+        st.dataframe(cond, width="stretch", hide_index=True)
+        x1, x2 = st.columns(2)
+        with x1:
+            fig = px.scatter(view.dropna(subset=["HTT", "Yield"]), x="HTT", y="Yield", color="Feedstock_class", hover_data=["Feedstock", "Pyrolysis_duration", "Title"], title="Char yield versus treatment temperature")
+            st.plotly_chart(style_fig(fig, 360), width="stretch")
+        with x2:
+            fig = px.scatter(view.dropna(subset=["HTT", "H_C"]), x="HTT", y="H_C", color="Feedstock_class", hover_data=["Feedstock", "Pyrolysis_duration", "Title"], title="H/C ratio versus treatment temperature")
+            st.plotly_chart(style_fig(fig, 360), width="stretch")
+        st.markdown("**Engineering reading:** temperature is a major product-quality lever: increasing treatment severity generally lowers volatile matter and H/C while changing yield and energy demand. The plots show study-level observations; feedstock, reactor configuration, heating rate and residence-time definitions differ between publications, so correlation is not a universal process law.")
+    with tabs[2]:
+        section("What product quality can the evidence support?")
+        quality = view[["Feedstock_class", "Yield", "Fixed_C", "Ash", "C", "H_C", "O_C", "Volatile_matter"]].groupby("Feedstock_class").agg({"Yield":"median", "Fixed_C":"median", "Ash":"median", "C":"median", "H_C":"median", "O_C":"median", "Volatile_matter":"median"}).reset_index()
+        quality = quality.rename(columns={"Feedstock_class":"Feedstock family", "Yield":"Yield wt%", "Fixed_C":"Fixed carbon wt%", "Ash":"Ash wt%", "C":"Elemental carbon wt%", "H_C":"H/C", "O_C":"O/C", "Volatile_matter":"Volatile matter wt%"})
+        st.dataframe(quality, width="stretch", hide_index=True)
+        fig = px.scatter(view.dropna(subset=["H_C", "O_C"]), x="O_C", y="H_C", color="Feedstock_class", hover_data=["Feedstock", "HTT", "Title"], title="Van Krevelen view of reported biochar elemental ratios")
+        st.plotly_chart(style_fig(fig, 390), width="stretch")
+        st.info("Product specification must be application-specific. Soil amendment, adsorption, metallurgical use and carbon removal have different quality and safety requirements. These records do not establish contaminant compliance or certification eligibility.")
+    with tabs[3]:
+        section("Design implications extracted from the operating data")
+        st.markdown("**Reactor and process selection**")
+        route = view.groupby("Pyrolysis_type").agg(Records=("ID", "count"), Median_temperature_C=("HTT", "median"), Median_residence_min=("Pyrolysis_duration", "median"), Median_heating_rate_C_min=("Heating_rate", "median"), Median_yield_wt_pct=("Yield", "median")).reset_index()
+        st.dataframe(route, width="stretch", hide_index=True)
+        st.markdown("**What these data can inform**")
+        st.markdown("- Preliminary operating envelopes for temperature, residence time and heating rate.\n- Expected product-yield and quality ranges for feedstock families represented in the dataset.\n- Which feedstock/process combinations have enough observations for a defensible comparison.\n- Inputs for preliminary reactor sizing and heat-duty calculations in the Technical module.")
+        st.markdown("**What these data cannot size on their own**")
+        st.markdown("- Continuous throughput, reactor diameter/length, solids residence-time distribution or scale-up factor.\n- Feed preparation, drying, conveying, emissions control, gas cleaning, quenching, storage and fire protection.\n- Heat-transfer coefficients, pressure drop, equipment turndown and plant availability.")
+        st.warning("The literature dataset is predominantly slow pyrolysis. Fast pyrolysis and gasification have very few rows; do not treat their medians as robust design recommendations. Full plant design requires reactor-specific and vendor data.")
+    with tabs[4]:
+        section("Economics: evidence boundary")
+        st.markdown("The bundled structured experimental dataset contains process conditions and biochar properties, **not a comparable plant-cost or market-price dataset**. It therefore cannot support defensible claims about CAPEX, OPEX, biochar selling price, payback or project profitability on this dashboard.")
+        st.markdown("**Commercial evidence that must be aggregated separately**")
+        st.markdown("- Installed equipment cost by capacity, reactor technology, country of manufacture and quotation date.\n- Feedstock purchase price, collection radius, transport cost, seasonal availability and competing uses.\n- Electricity, fuel, labour, maintenance, water, disposal and emissions-control costs.\n- Biochar offtake prices by application, quality grade, contract volume and delivery basis.\n- Carbon-credit methodology, monitoring/verification cost, issuance risk and realised transaction price.")
+        st.info("The Economic module remains a scenario calculator. Its editable prices and cost assumptions must not be presented as literature-verified market facts until source-backed cost records and supplier quotations are added.")
+    with tabs[5]:
+        section("Trace findings back to the original publications")
+        src = view[["Publication year", "Title", "Journal", "DOI", "Feedstock", "Feedstock_class", "Pyrolysis_type", "HTT", "Pyrolysis_duration", "Heating_rate", "Yield", "C", "Ash", "H_C"]].drop_duplicates().sort_values("Publication year", ascending=False).head(250)
+        src = src.copy(); src["DOI link"] = src["DOI"].apply(lambda x: f"https://doi.org/{x}" if pd.notna(x) and str(x).strip() else "")
+        st.dataframe(src.drop(columns=["DOI"]), width="stretch", hide_index=True, column_config={"DOI link":st.column_config.LinkColumn("Open source DOI")})
+        st.caption("The structured records are drawn from the bundled biochar production dataset (April 2024). Values remain attached to their publication and experimental conditions. Missing fields are not imputed for this dashboard.")
+
+# ================================================================== ROUGH ESTIMATES
+elif page == "Rough estimates":
+    header("Rough estimates", "Fast screening from the trained prediction models: choose a process, feedstock and conditions.")
+    pred = get_predictor(); d = scenario_controls("est")
+    feed, process, htt, dur, hr = d["feed"], d["process"], d["htt"], d["dur"], d["hr"]; cls = FEEDSTOCKS[feed]["cls"]
+    p0, e0, r = design_inputs(pred, feed, htt, dur, hr, replace(S.process, wet_feed_t_y=10000.0), S.economics, d["liquid_share"], process=process)
+    t0 = calculate_technical(p0); ec0 = calculate_economics(t0, p0, e0); sf = p0.stable_carbon_fraction
+    if process != "slow_pyrolysis": st.warning(f"{PROCESSES[process]['label']}: {PROCESSES[process]['status']}")
+    elif r["extrapolating"]: st.warning("Outside the observed temperature range for this feedstock class: treat as extrapolation.")
+    tabs = st.tabs(["Estimate", "Trends", "Model validation", "Mathematical model", "Calculation log"])
+    with tabs[0]:
+        sd = lambda k: f"\u00b1{r[k]['std']:.2g} (tree spread)" if r[k]["std"] else PROCESSES[process]["yield_source"]
+        section("Predicted product")
+        kpis([("Char / solid yield", f"{r['Yield']['mean']:.1f}", sd("Yield"), "wt% dry"), ("Carbon in char", f"{r['C']['mean']:.1f}", sd("C"), "wt%"), ("H/C molar", f"{r['H_C']['mean']:.2f}", sd("H_C")),
+              ("Stable-C fraction", f"{sf:.2f}", "placeholder H/C map")])
+        st.caption("H/C below 0.7 is the usual biochar quality limit. Tree spread is not a calibrated interval.")
+        section("Rough result per 10,000 t/y wet feed")
+        kpis([("Biochar / solid", fmt(t0["char_t_y"]), "", "t/y"), ("Removal proxy", fmt(t0["net_removal_proxy_tco2e_y"]), "screening", "tCO\u2082e/y"),
+              ("Carbon retained", f"{t0['carbon_retained_fraction']:.0%}", "feasible" if t0["carbon_balance_ok"] else "INFEASIBLE: more C in char than in feed"), ("Economic surplus", fmt(ec0["annual_economic_surplus_usd_y"]), "placeholder prices", "USD/y")])
+        if st.button("Use these conditions as the active scenario", type="primary"): S.yield_source = "Predicted (data-driven)"; st.toast("Scenario set: see Technical, Economic, Optimize.")
+    with tabs[1]:
+        if process != "slow_pyrolysis": st.info("Trend curves come from the slow-pyrolysis predictor. Select slow pyrolysis to see them.")
         else:
-            st.success("The best-ranked configuration has a positive modelled annual economic surplus under the current assumptions. This is a screening result, not a bankable feasibility conclusion.")
+            htts = np.arange(300, 801, 25); df = pred.data; cols = st.columns(2)
+            for col, tgt, ttl in [(cols[0], "Yield", "Char yield (wt%)"), (cols[1], "H_C", "H/C (molar)")]:
+                mu, sdv = pred.curve(cls, htts, dur, hr, tgt); sub = df[(df.Feedstock_class == cls) & df[tgt].notna()]
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(x=sub.HTT, y=sub[tgt], mode="markers", name="Literature", marker=dict(size=6, opacity=.35, color=GREY)))
+                fig.add_trace(go.Scatter(x=np.r_[htts, htts[::-1]], y=np.r_[mu + sdv, (mu - sdv)[::-1]], fill="toself", line=dict(width=0), fillcolor="rgba(31,122,90,.18)", name="\u00b11 spread", hoverinfo="skip"))
+                fig.add_trace(go.Scatter(x=htts, y=mu, name="Prediction", line=dict(color=GREEN, width=3)))
+                if tgt == "H_C": fig.add_hline(y=0.7, line_dash="dot", annotation_text="0.7 limit")
+                fig.update_layout(title=f"{ttl} ({cls}, n={len(sub)})", xaxis_title="HTT (\u00b0C)")
+                with col, st.container(border=True): st.plotly_chart(style_fig(fig, 320), width="stretch")
+    with tabs[2]:
+        cv = pd.DataFrame([{"Target": TARGETS[k_], "Observations": v["n"], "Papers": v["papers"], "CV R\u00b2 (held-out papers)": round(v["r2"], 2), "Class-mean baseline R\u00b2": round(v["baseline_r2"], 2), "MAE": round(v["mae"], 2)} for k_, v in pred.cv.items()])
+        st.dataframe(cv, width="stretch", hide_index=True)
+        st.caption("Cross-validation holds out whole publications. Yield and H/C beat the baseline clearly; carbon and ash are about at baseline. Fixed carbon and O/C were tested and dropped (no skill). The dataset contains 1,350 slow, 13 fast and 7 gasification rows, so only slow pyrolysis is modelled from data.")
+        source_note(["ML-001", "PERM-001"])
+    with tabs[3]: render_math("estimates")
+    with tabs[4]: log_view(log_estimates(feed, cls, htt, dur, hr, r, sf, t0, ec0, process), "estimates_log")
+    snap = {"process": PROCESSES[process]["label"], "process_status": PROCESSES[process]["status"], "feedstock": feed, "HTT_C": htt, "residence_min": dur, "prediction": r, "stable_fraction": sf,
+            "cv": {k_: {"r2": v["r2"], "baseline_r2": v["baseline_r2"]} for k_, v in pred.cv.items()},
+            "per_10kt_wet": {"char_t_y": t0["char_t_y"], "removal_proxy": t0["net_removal_proxy_tco2e_y"], "carbon_retained": t0["carbon_retained_fraction"]},
+            "assumption_status": "Stable fraction map, feed carbon, HTC lines are placeholders/typical values."}
+    ai_panel("Rough estimates", _r(snap), fallback=[f"Predicted char yield {r['Yield']['mean']:.1f}% and H/C {r['H_C']['mean']:.2f}."])
 
-        finance_a, finance_b = st.columns(2)
-        finance_a.metric("EBITDA-like operating surplus", f"${best_margin.ebitda_like_usd_y:,.0f}/y",
-                         help="Revenue less modelled operating costs, excluding annualised capital recovery; not a statutory EBITDA calculation.")
-        finance_b.metric("Annualised capital recovery", f"${best_margin.annualised_capex_usd_y:,.0f}/y",
-                         help="Equivalent annual capital charge based on the selected discount rate and plant life.")
-
-        st.subheader("1 · Which configurations perform best financially?")
-        ranked = results.sort_values("annual_margin_usd_y", ascending=True).copy()
-        ranked["configuration"] = ranked["technology"].astype(str).str.replace("_", " ").str.title() + " · " + ranked["route"].astype(str).str.replace("_", " ").str.title()
-        fig = px.bar(ranked, x="annual_margin_usd_y", y="configuration", orientation="h", color="pareto_optimal",
-                     color_discrete_map={True:"#176b5b",False:"#b9c8c2"},
-                     labels={"annual_margin_usd_y":"Annual economic surplus (USD/year)","configuration":"Technology · route","pareto_optimal":"Pareto-efficient"},
-                     hover_data={"char_tpy":":,.0f","net_removal_tCO2py":":,.0f","annual_margin_usd_y":":,.0f"})
-        fig.add_vline(x=0, line_dash="dash", line_color="#d49a45", annotation_text="Break-even", annotation_position="top")
-        fig.update_layout(height=max(390, min(720, 30*len(ranked)+130)), legend_title_text="")
-        st.plotly_chart(fig, use_container_width=True)
-        st.caption("Bars to the right of zero have a positive modelled annual economic surplus after annualised capital recovery; bars to the left indicate a deficit. Green identifies Pareto-efficient options.")
-
-        st.subheader("2 · Compare the two decision priorities")
-        left,right = st.columns(2)
-        with left:
-            st.markdown("**Best financial outcome**")
-            st.metric("Annual economic surplus", f"${best_margin.annual_economic_surplus_usd_y:,.0f}")
-            st.write(f"{str(best_margin.technology).replace('_',' ').title()} · {str(best_margin.route).replace('_',' ').title()}")
-            st.write(f"Screening removal: **{best_margin.net_removal_tCO2py:,.0f} tCO₂/year**")
-        with right:
-            st.markdown("**Highest removal estimate**")
-            st.metric("Screening net removal", f"{best_cdr.net_removal_tCO2py:,.0f} tCO₂/year")
-            st.write(f"{str(best_cdr.technology).replace('_',' ').title()} · {str(best_cdr.route).replace('_',' ').title()}")
-            st.write(f"Annual economic surplus: **${best_cdr.annual_economic_surplus_usd_y:,.0f}/year**")
-        st.caption("These may be different configurations because the model optimises financial margin and screening carbon removal as separate objectives.")
-
-        st.subheader("3 · Where does the best financial case spend and earn money?")
-        best_breakdown = cost_revenue_breakdown(best_margin.to_dict())
-        if not best_breakdown.empty:
-            cost_fig = px.bar(best_breakdown, x="usd_per_year", y="category", color="type", orientation="h",
-                              color_discrete_map={"Cost":"#d49a45","Revenue":"#176b5b"},
-                              labels={"usd_per_year":"USD/year","category":"","type":"Cash-flow type"})
-            cost_fig.update_layout(height=360, legend_title_text="")
-            st.plotly_chart(cost_fig, use_container_width=True)
-        marketable = float(best_margin.get("marketable_char_tpy", 0) or 0)
-        if marketable > 0 and float(best_margin.get("product_revenue_usd_y", 0) or 0) > 0:
-            break_even_price = (float(best_margin.total_cost_usd_y)-float(best_margin.carbon_revenue_usd_y)-float(best_margin.get("energy_revenue_usd_y", 0) or 0))/marketable
-            st.info(f"Approximate product break-even price (after other modelled revenue streams) for this configuration: **${break_even_price:,.0f}/t** at the modelled marketable volume of {marketable:,.0f} t/year. This is a simple screening threshold; it assumes other costs, demand and output remain unchanged.")
-
-        with st.expander("Full configuration comparison", expanded=False):
-            display_cols=["technology","product_type","route","char_tpy","marketable_char_tpy","product_revenue_usd_y","energy_revenue_usd_y","carbon_revenue_usd_y","ebitda_like_usd_y","annualised_capex_usd_y","total_cost_usd_y","annual_economic_surplus_usd_y","net_removal_tCO2py","pareto_optimal","quality_status"]
-            st.dataframe(results[display_cols].rename(columns={"technology":"Technology","product_type":"Product","route":"Route","char_tpy":"Product (t/y)","marketable_char_tpy":"Marketable product (t/y)","product_revenue_usd_y":"Product revenue (USD/y)","energy_revenue_usd_y":"Energy revenue (USD/y)","carbon_revenue_usd_y":"Carbon revenue (USD/y)","ebitda_like_usd_y":"EBITDA-like surplus (USD/y)","annualised_capex_usd_y":"Annualised capital (USD/y)","total_cost_usd_y":"Total cost incl. capital (USD/y)","annual_economic_surplus_usd_y":"Annual economic surplus (USD/y)","net_removal_tCO2py":"Screening removal (tCO₂/y)","pareto_optimal":"Pareto-efficient","quality_status":"Quality status"}), use_container_width=True, hide_index=True)
-            st.download_button("Download configuration comparison (CSV)", results.to_csv(index=False), "biochar_configuration_comparison.csv", "text/csv")
-        st.caption("Model outputs are indicative. Country prices, technology yields, utility demand and CAPEX remain editable assumptions; validate them with local quotations, plant data and offtake evidence. Carbon removal is a simplified screening proxy, not verified LCA/MRV.")
-
+# ================================================================== TECHNICAL
 elif page == "Technical":
-    st.markdown('<div class="eyebrow">Model documentation</div>', unsafe_allow_html=True)
-    st.header("Technical reference")
-    st.write("This section documents the deterministic screening engine currently used by the platform. Values shown are defaults; sidebar overrides are applied to the active scenario. These are not vendor guarantees or verified country quotations.")
-    st.warning("Model status: engineering and commercial screening only. Product quality requires laboratory testing; carbon removal is a simplified proxy, not a verified LCA/MRV result.")
-
-    with st.expander("1. System boundary and calculation sequence", expanded=True):
-        st.markdown("""
-        **Calculation sequence**
-        1. Received feedstock × plant availability → processed received feed.
-        2. Wet-basis moisture correction → dry feed throughput.
-        3. Dry feed × technology-specific product yield → annual solid-product output.
-        4. Drying and conversion energy → electricity and thermal costs/emissions.
-        5. Feedstock, logistics, labour, route, capital recovery and fixed OPEX → annual cost.
-        6. Demand-limited product sales and (only if explicitly enabled and verified) CDR revenue → annual margin.
-        7. For eligible biochar CDR scenarios, stable-carbon proxy less modelled operating emissions → screening net removal.
-
-        The current calculation is annual and steady-state. It does not perform equipment sizing, transient process simulation, coproduct mass balancing, or split allocation of product across multiple markets.
-        """)
-
-    with st.expander("2. Mass balance and moisture model", expanded=True):
-        st.latex(r"F_{processed}=F_{received}\,A")
-        st.latex(r"F_{dry}=F_{processed}(1-M_{wb})")
-        st.latex(r"W/F_{dry}=\frac{M_{wb}}{1-M_{wb}}")
-        st.latex(r"Q_{drying}=\frac{M_{wb}}{1-M_{wb}}\frac{2.6}{0.70}\;\mathrm{GJ/t_{dry}}")
-        st.latex(r"Q_{total}=(Q_{drying}+Q_{process})\,m_E")
-        st.latex(r"P_{solid}=F_{dry}\,Y_{solid,dry}")
-        st.markdown("`A` is plant availability; `M_wb` is wet-basis moisture fraction; 2.6 GJ/t-water is the assumed latent/sensible drying duty and 0.70 is assumed drying efficiency; `m_E` is the user energy-demand multiplier. Product yield is a technology input, not a trained prediction.")
-
-    with st.expander("3. Technology assumptions"):
-        tech_rows=[]
-        for name, cfg in TECHNOLOGIES.items():
-            tech_rows.append({"Technology":name,"Product represented":cfg['product'],"Solid yield (dry basis)":cfg['char_yield'],"Process heat (GJ/t dry)":cfg['process_heat_GJ_t_dry'],"Electricity (kWh/t dry)":cfg['electricity_kWh_t_dry'],"CAPEX (USD per t/y)":cfg['capex_usd_per_tpy'],"Fixed OPEX/CAPEX":cfg['fixed_opex_fraction'],"Product C fraction":cfg['char_C_fraction'],"Stable C fraction":cfg['stable_C_fraction'],"Routes":", ".join(cfg['allowed_routes'])})
-        st.dataframe(pd.DataFrame(tech_rows), use_container_width=True, hide_index=True)
-        st.caption("The table values are editable scenario defaults. HTC is hydrochar; torrefaction is a torrefied solid-fuel route; gasification is represented as gas and ash/char, not automatically as biochar.")
-
-    with st.expander("4. Feedstock and country input assumptions"):
-        st.markdown("**Feedstock descriptors currently stored**")
-        st.dataframe(pd.DataFrame.from_dict(FEEDSTOCKS, orient="index").rename_axis("Feedstock"), use_container_width=True)
-        st.markdown("**Country commercial defaults (USD-based inputs)**")
-        market_rows=[]
-        for name, cfg in COUNTRY_SCENARIOS.items():
-            market_rows.append({"Country":name, **{k:v for k,v in cfg.items() if k not in ('currency','fx_per_usd')}})
-        st.dataframe(pd.DataFrame(market_rows).set_index("Country"), use_container_width=True)
-        st.caption("Feedstock ash/carbon/nitrogen/contamination descriptors are reference inputs; the current core calculation does not yet use them to predict yield or product properties. FX metadata is not used to convert the USD calculations.")
-
-    with st.expander("5. Route and fixed model constants"):
-        route_rows=[]
-        for route_name, route_cfg in ROUTES.items():
-            route_rows.append({"Route":route_name,"Route cost (USD/t solid)":route_cfg["route_cost_usd_t"],"Demand fraction":route_cfg["demand_fraction"],"Price field":route_cfg["price_key"] or "Energy-value constant"})
-        st.dataframe(pd.DataFrame(route_rows), use_container_width=True, hide_index=True)
-        st.markdown("**Global constants:** discount rate = 12%; plant life = 15 years; default availability = 85%; energy-route value constant = USD 4.0; carbon crediting disabled; CDR accounting inputs not verified.")
-        st.error("Known unit limitation: energy_recovery and solid_fuel currently multiply solid-product tonnes by the USD 4.0 energy-value constant. No product LHV (GJ/t) conversion is applied, so those route revenues are dimensionally incomplete and must not be used as commercial estimates until an LHV-based model is added.")
-
-    with st.expander("6. Economic model", expanded=True):
-        st.latex(r"C_{feed}=F_{processed}\,c_{gate}")
-        st.latex(r"C_{transport}=F_{processed}\,d\,c_{logistics}")
-        st.latex(r"C_{electricity}=F_{dry}\,e_{spec}\,p_e\,m_E")
-        st.latex(r"C_{heat}=F_{dry}\,Q_{total}\,p_h")
-        st.latex(r"CRF=\frac{r(1+r)^n}{(1+r)^n-1};\quad C_{capital,annual}=CAPEX\,CRF")
-        st.latex(r"CAPEX=F_{dry}\,c_{CAPEX}\,m_{CAPEX}")
-        st.latex(r"C_{fixed}=CAPEX\,f_{OPEX};\quad C_{labour}=F_{dry}\,c_{labour}")
-        st.latex(r"C_{route}=P_{solid}\,c_{route}")
-        st.latex(r"P_{marketable}=\min(P_{solid},D_{annual}\,f_{route})")
-        st.latex(r"R_{product}=P_{marketable}\,p_{product}")
-        st.latex(r"EBITDA_{screen}=R_{product}+R_{energy}+R_{CDR}-C_{operating}")
-        st.latex(r"Surplus_{economic}=EBITDA_{screen}-C_{capital,annual}")
-        st.markdown("Energy export is calculated as exported GJ/year × USD/GJ. Gasification and solid-fuel routes use explicit editable energy-yield/LHV placeholders. Internal process heat is represented as a heat cost only; no separate heat-export credit or coproduct sale is assumed. NPV, IRR and payback are not shown because project cash-flow, tax, working-capital, financing and replacement-capital schedules are not implemented.")
-        st.markdown("The discount rate and plant life are editable in the sidebar under Project finance assumptions and are used in the capital recovery factor. Route-specific demand fractions and route costs are fixed in the `ROUTES` configuration. Carbon-credit revenue is zero unless both crediting and accounting-verification flags are enabled (both are currently false).")
-
-    with st.expander("7. Carbon-removal screening model", expanded=True):
-        st.latex(r"C_{stable}=P_{solid}\,f_{C,char}\,f_{stable}")
-        st.latex(r"CO_{2,gross}=C_{stable}\frac{44}{12}")
-        st.latex(r"E_{heat}=F_{dry}\,Q_{total}\,0.056")
-        st.latex(r"E_{grid}=F_{dry}\,e_{spec}\,0.00045")
-        st.latex(r"E_{logistics}=F_{processed}\,d\,0.00008")
-        st.latex(r"CO_{2,net,screen}=\max(0,CO_{2,gross}-E_{heat}-E_{grid}-E_{logistics})")
-        st.markdown("This proxy is only calculated for the `cdr` route when the technology product label is `biochar`. Emission factors and stable-carbon fractions are simplified assumptions. No baseline/additionality, full supply chain, leakage, indirect effects, uncertainty, permanence methodology, MRV or third-party verification is implemented. It must not be represented as creditable removal.")
-
-    with st.expander("8. Application eligibility and quality gates"):
-        st.markdown("Technology-route compatibility is a rule-based allow-list. A compatible route is only **eligible for further testing**. It is not a compliance decision or certification. The required tests below are hold points before commercial qualification.")
-        for route_name, tests in APPLICATION_REQUIREMENTS.items():
-            st.markdown(f"**{route_name.replace('_',' ').title()}**")
-            st.write("; ".join(tests))
-
-    with st.expander("9. Optimisation mathematics and decision rule"):
-        st.latex(r"\max (\Pi,\;CO_{2,net,screen})")
-        st.markdown("The optimiser enumerates the technology-route combinations permitted by the technology table, evaluates each deterministically, and marks a scenario Pareto-optimal if no other scenario is at least as good in both annual economic surplus and screening net removal and strictly better in one. It does not use a weighted score or select a universal winner. The current implementation assigns the full solid output to one route per scenario; it does not optimise split allocations.")
-
-    with st.expander("10. What is not currently modelled"):
-        st.markdown("""
-        - No trained feedstock-to-yield/property predictor is called by the calculation engine.
-        - Feedstock ash, elemental descriptors and contamination fields are displayed as reference data but are not yet used in the core mass/economic equations.
-        - No detailed reactor kinetics, temperature/residence-time model, heat integration, gas/oil coproduct balance or equipment sizing.
-        - No plant-specific utilities balance, water balance, emissions permit model, taxes, financing structure, NPV/IRR or construction schedule.
-        - No measured product quality, certification, offtake validation or full LCA/MRV.
-        - Sensitivity grid is deterministic; it is not Monte Carlo or probabilistic uncertainty quantification.
-        """)
-
-    st.markdown("#### Live calculation trace for the active sidebar scenario")
-    tech = selected_tech
-    route_options = TECHNOLOGIES[tech]["allowed_routes"]
-    route = st.selectbox("Product route", route_options)
-    result = evaluate_configuration(country, feedstock, feed_tpy, moisture, transport_km, tech, route,
-                                     availability, capex_multiplier=capex_mult, energy_multiplier=energy_mult,
-                                     market_override=market_override, technology_override=custom_tech)
-    gate = application_gate(tech, route)
-    if result:
-        a,b,c = st.columns(3)
-        a.metric("Dry feed", f"{result['dry_feed_tpy']:,.1f} t/y")
-        b.metric("Char / solid product", f"{result['char_tpy']:,.1f} t/y")
-        c.metric("Annual economic surplus", f"${result['annual_economic_surplus_usd_y']:,.0f}")
-        st.markdown("#### Mass, cost and revenue outputs")
-        st.dataframe(pd.DataFrame([result]).T.rename(columns={0:"Value"}), use_container_width=True)
-        st.markdown("#### Deterministic cost and revenue decomposition")
-        breakdown = cost_revenue_breakdown(result)
-        st.plotly_chart(px.bar(breakdown, x="usd_per_year", y="category", color="type", orientation="h",
-                               labels={"usd_per_year":"USD/year","category":""}), use_container_width=True)
-        st.markdown("#### Application gate")
-        st.write(gate["status"])
-        st.write("Certification claim allowed:", gate["certification_claim_allowed"])
-        for item in gate["required_tests"]:
-            st.write("• " + item)
-        st.markdown("#### Why this result looks this way")
-        for reason in deterministic_reasons(result, {"moisture":moisture,"transport_km":transport_km}, gate):
-            st.write("• " + reason)
-        st.info(model_validation_warning())
+    header("Technical", "Understand the process step by step: material flows, energy demand, particle conversion and the calculations behind every result.")
+    S.yield_source = st.radio("Product yields come from", ["Predicted (data-driven)", "Manual inputs"], horizontal=True, index=0 if PRED() else 1)
+    if PRED(): scenario_controls("tech")
     else:
-        st.warning("The selected technology-route combination is not eligible in the current model.")
+        with st.container(border=True):
+            names = list(PROCESSES); sel = st.selectbox("Process", names, index=names.index(S.design["process"]), format_func=lambda n: PROCESSES[n]["label"], key="tech_proc_m")
+            if sel != S.design["process"]: set_process(sel); st.rerun()
+            S.design["dur"] = float(st.number_input("Residence time (min)", 0.02, 600.0, float(S.design["dur"]), 1.0, key="t_dur_m"))
+            S.process = process_inputs("man")
+    with st.expander("Edit process, plant and particle inputs", expanded=False):
+        if PRED(): S.process = plant_inputs(S.process)
+        st.markdown("**Particle model**"); particle_inputs()
+    R = pipeline(); t, p, sim, pp, pr = R["t"], R["p"], R["sim"], R["pp"], R["pr"]
+    chips(status_checks(R))
+    if pr and S.design["process"] == "slow_pyrolysis": st.caption(f"Predicted: yield {pr['Yield']['mean']:.1f}% \u00b1{pr['Yield']['std']:.1f}, carbon {pr['C']['mean']:.0f}%, H/C {pr['H_C']['mean']:.2f}.")
+    st.markdown("**How to use this analysis**  \n1. Check how much feed becomes each product.  2. Inspect the heat required to run the process.  3. Check whether particles heat and convert within the available residence time.  4. Open the audit tabs to inspect equations, assumptions and verification.")
+    tabs = st.tabs(["1 · Material balance", "2 · Heat & energy", "3 · Particle behaviour", "4 · Calculation log", "5 · Assumptions & models", "6 · Equations", "7 · Verification"])
+    with tabs[0]:
+        st.caption("Start with the overall dry-feed balance. The Sankey shows where the dry biomass goes; the table gives the exact annual mass flow.")
+        c1, c2 = st.columns([3, 2])
+        with c1, st.container(border=True): st.plotly_chart(sankey(t), width="stretch")
+        with c2:
+            rows = [["Wet feed", t["wet_feed_t_y"]], ["Water in feed", t["feed_water_t_y"]], ["Dry feed", t["dry_feed_t_y"]], ["Biochar / solid", t["char_t_y"]], ["Liquid", t["liquid_t_y"]], ["Gas", t["gas_t_y"]], ["Other", t["other_t_y"]], ["Residual", t["mass_balance_residual_t_y"]]]
+            if p.process_type == "htc": rows.insert(2, ["Slurry water (circulating)", t["slurry_water_t_y"]])
+            st.dataframe(pd.DataFrame(rows, columns=["Stream", "t/y"]).round(3), width="stretch", hide_index=True)
+        section("Carbon balance")
+        kpis([("Carbon in dry feed", fmt(t["feed_carbon_t_y"]), "typical feed C fraction", "t/y"), ("Carbon in char", fmt(t["char_carbon_t_y"]), "", "t/y"),
+              ("Retained in char", f"{t['carbon_retained_fraction']:.0%}", "must be \u2264 100%"), ("Stable carbon \u2192 CO\u2082", fmt(t["gross_stored_co2_t_y"]), "gross", "t/y")])
+        if not t["carbon_balance_ok"]: st.error("Infeasible: char holds more carbon than the feed supplies. Check the yield/carbon inputs or the feed carbon fraction.")
+    with tabs[1]:
+        st.caption("Heat demand is built from separate physical contributions. Compare the bars to identify the dominant duty, then inspect the table for the net process requirement.")
+        st.caption(f"Water properties: {t['water_property_source']}. Reaction heat: {p.pyrolysis_enthalpy_kJ_kg_dry:.0f} kJ/kg (user assumption)." + (" HTC: no vaporisation; heat recovery applied." if p.process_type == "htc" else ""))
+        terms = pd.DataFrame([["Water sensible", t["water_sensible_GJ_y"]], ["Vaporisation", t["water_vaporisation_GJ_y"]], ["Steam superheat", t["steam_superheat_GJ_y"]], ["Dry solids", t["solids_sensible_GJ_y"]],
+                              ["Reaction heat", t["reaction_heat_GJ_y"]], ["Losses", t["gross_heat_duty_GJ_y"] - t["useful_process_heat_GJ_y"]], ["Efficiency penalty", t["purchased_heat_requirement_GJ_y"] - t["gross_heat_duty_GJ_y"]]], columns=["Term", "GJ/y"])
+        c1, c2 = st.columns([3, 2])
+        with c1, st.container(border=True): st.plotly_chart(style_fig(px.bar(terms, x="Term", y="GJ/y", color_discrete_sequence=[BLUE]), 320, legend=False), width="stretch")
+        with c2:
+            st.dataframe(pd.DataFrame([["Useful process heat", t["useful_process_heat_GJ_y"]], ["Purchased heat requirement", t["purchased_heat_requirement_GJ_y"]], ["Co-product chemical energy", t["coproduct_chemical_energy_GJ_y"]],
+                                       ["Recoverable co-product heat", t["recoverable_coproduct_heat_GJ_y"]], ["Heat deficit", t["heat_deficit_GJ_y"]], ["Heat surplus", t["heat_surplus_GJ_y"]]], columns=["Quantity", "GJ/y"]).round(1), width="stretch", hide_index=True)
+        st.caption("Screening balance: sensible heat, phase change, constant solids cp. No reactor heat-transfer area, oxidant demand or gas-phase reactions.")
+    with tabs[2]:
+        st.caption("The particle model answers two practical questions: how quickly heat reaches the particle centre, and how quickly the model predicts devolatilisation. Compare both with the selected residence time.")
+        if sim is None: st.info("The particle model does not apply to hydrothermal carbonisation.")
+        else:
+            kpis([("Time to 95% conversion", f"{(sim['t_target_s'] or float('nan'))/60:.3g}", "min" + (" (indicative for this process)" if R['proc']['particle'] != 'full' else "")), ("Centre within 5 K of gas", f"{(sim['t_center_within_5K_s'] or float('nan'))/60:.3g}", "min"),
+                  ("Biot number", f"{sim['Biot']:.2f}", "hR / k"), ("Regime", sim["regime"].split()[0].capitalize(), f"\u03c4 heat {sim['tau_heat_s']:.3g} s \u00b7 \u03c4 kin {sim['tau_kin_s']:.3g} s")])
+            tm = sim["t_s"] / 60; c1, c2 = st.columns(2)
+            fig = go.Figure(); fig.add_trace(go.Scatter(x=tm, y=sim["T_surface_C"], name="Surface", line=dict(color=AMBER, width=2.5))); fig.add_trace(go.Scatter(x=tm, y=sim["T_center_C"], name="Centre", line=dict(color=GREEN, width=2.5)))
+            fig.add_hline(y=pp.T_inf_C, line_dash="dot", annotation_text="Gas / reactor T"); fig.update_layout(xaxis_title="Time (min)", yaxis_title="Temperature (\u00b0C)", title="Particle temperature")
+            with c1, st.container(border=True): st.plotly_chart(style_fig(fig, 320), width="stretch")
+            fig = go.Figure(go.Scatter(x=tm, y=sim["X_mean"], line=dict(color=BLUE, width=3), name="Conversion")); fig.add_hline(y=0.95, line_dash="dot", annotation_text="95%")
+            if sim["t_target_s"]: fig.add_vline(x=sim["t_target_s"] / 60, line_dash="dot")
+            fig.add_vline(x=R["dur_min"], line_color=RED, annotation_text="Residence time"); fig.update_layout(xaxis_title="Time (min)", yaxis_title="Virgin material converted", title="Devolatilisation progress")
+            with c2, st.container(border=True): st.plotly_chart(style_fig(fig, 320, legend=False), width="stretch")
+            fig = go.Figure()
+            for s_ in sim["snapshots"]: fig.add_trace(go.Scatter(x=s_["r_mm"], y=s_["T_C"], name=f"{s_['t_s']/60:.2g} min", mode="lines"))
+            fig.update_layout(xaxis_title="Radius (mm)", yaxis_title="Temperature (\u00b0C)", title="Radial temperature profiles")
+            with st.container(border=True): st.plotly_chart(style_fig(fig, 320), width="stretch")
+            st.info("Reduced-order particle model (1-D spherical conduction + one-step kinetics), verified against the analytical conduction solution. It does not include gas flow, pressure, shrinkage or bed effects; in a packed or rotating bed heat-up is slower than for a single particle in hot gas, so treat conversion time as a lower bound.")
+            if sim.get("kinetics_extrapolated"):
+                st.warning("Kinetic extrapolation: the cited beech-wood Arrhenius parameters were fitted over 573–708 K (about 300–435 °C). The selected particle gas temperature is outside that range; the predicted conversion time is an extrapolation, not a validated residence-time design value.")
+    with tabs[3]: log_view(log_technical(R), "technical_log")
+    with tabs[4]:
+        st.dataframe(assumptions_table(R), width="stretch", hide_index=True)
+        section("Models used"); source_note(["MASS-001", "ENERGY-001", "PYRO-001", "ML-001", "PERM-001", "PART-001", "KIN-001"])
+    with tabs[5]: render_math("technical")
+    with tabs[6]:
+        ver = verification_cached(); st.markdown("**Particle solver vs analytical sphere solution** (constant properties, fixed surface temperature, no reaction)")
+        st.dataframe(pd.DataFrame(ver["rows"]).round(3), width="stretch", hide_index=True)
+        from engine.thermo import water_enthalpies, liquid_water_heating_kJ_kg
+        dry, water = t["dry_feed_t_y"], t["feed_water_t_y"]
+        if p.process_type == "htc": wtot = (t["slurry_water_t_y"] * liquid_water_heating_kJ_kg(p.feed_temp_C, p.reactor_temp_C)["kJ_kg"]); hand = ((wtot + dry * p.solid_cp_kJ_kgK * (p.reactor_temp_C - p.feed_temp_C) + dry * p.pyrolysis_enthalpy_kJ_kg_dry) / 1000) * (1 - p.htc_heat_recovery_fraction)
+        else:
+            w = water_enthalpies(p.feed_temp_C, p.reactor_temp_C, cp_w=p.water_cp_kJ_kgK, cp_v=p.steam_cp_kJ_kgK, hfg=p.water_latent_kJ_kg) if p.use_steam_tables else {"sensible": p.water_cp_kJ_kgK * (100 - p.feed_temp_C), "latent": p.water_latent_kJ_kg, "superheat": p.steam_cp_kJ_kgK * max(0, p.reactor_temp_C - 100)}
+            hand = (water * (w["sensible"] + w["latent"] + w["superheat"]) + dry * p.solid_cp_kJ_kgK * (p.reactor_temp_C - p.feed_temp_C) + dry * p.pyrolysis_enthalpy_kJ_kg_dry) / 1000
+        kpis([("Max particle-solver error", f"{ver['max_error_pct']:.3f}", "% of temperature rise"), ("Useful heat: platform", fmt(t["useful_process_heat_GJ_y"]), "", "GJ/y"), ("Useful heat: independent recalculation", fmt(hand), "", "GJ/y"),
+              ("Difference", f"{abs(hand - t['useful_process_heat_GJ_y']):.1e}", "GJ/y"), ("Mass-balance residual", f"{t['mass_balance_residual_t_y']:.1e}", "t/y")])
+        st.caption("Checks run live. Verification shows the equations are solved correctly; it does not validate them against a real reactor (see docs/VALIDATION_ROADMAP.md).")
+    technical_ai_snapshot = snapshot(R, ["prediction", "technical"])
+    technical_ai_snapshot["calculation_log"] = log_technical(R).to_dict(orient="records")
+    ai_panel("Technical", technical_ai_snapshot, fallback=[f"Purchased heat {fmt(t['purchased_heat_requirement_GJ_y'])} GJ/y. The Technical tabs show equations, numerical inputs, calculation log and verification checks."])
 
-elif page == "Optimisation":
-    st.markdown('<div class="eyebrow">What-if analysis</div>', unsafe_allow_html=True)
-    st.header("Custom scenario runner")
-    st.write("Build and run independent what-if cases. The platform's supplied baseline comparison remains on the Executive dashboard; scenarios created here are stored separately in this session.")
-    with st.form("custom_scenario_form"):
-        st.markdown("#### 1. Scenario definition")
-        c1,c2,c3 = st.columns(3)
-        custom_country = c1.selectbox("Country", list(COUNTRY_SCENARIOS), index=list(COUNTRY_SCENARIOS).index(DEFAULT_COUNTRY), key="custom_country")
-        custom_feedstock = c2.selectbox("Feedstock", list(FEEDSTOCKS), index=list(FEEDSTOCKS).index(DEFAULT_FEEDSTOCK), key="custom_feedstock")
-        custom_tech_name = c3.selectbox("Technology", list(TECHNOLOGIES), index=list(TECHNOLOGIES).index("slow_pyrolysis"), key="custom_technology")
-        cfg = TECHNOLOGIES[custom_tech_name]
-        c1,c2,c3 = st.columns(3)
-        custom_route = c1.selectbox("Product / market route", cfg["allowed_routes"], key=f"custom_route_{custom_tech_name}")
-        custom_feed_rate = c2.number_input("Feedstock received (t/y)", min_value=0.0, value=10000.0, step=250.0, key="custom_feed_rate")
-        custom_moisture = c3.slider("Moisture (wet basis)", 0.0, 0.80, 0.12, 0.01, key="custom_moisture")
-        c1,c2,c3 = st.columns(3)
-        custom_distance = c1.number_input("One-way transport (km)", min_value=0.0, value=60.0, step=5.0, key="custom_distance")
-        custom_availability = c2.slider("Plant availability", 0.10, 1.00, 0.85, 0.01, key="custom_availability")
-        custom_capex_mult = c3.number_input("CAPEX multiplier", 0.1, 5.0, 1.0, 0.05, key="custom_capex_mult")
-        st.markdown("#### 2. Custom engineering assumptions")
-        c1,c2,c3 = st.columns(3)
-        custom_yield = c1.number_input("Solid product yield (dry basis)", 0.01, 0.95, float(cfg["char_yield"]), 0.01, key=f"custom_yield_{custom_tech_name}")
-        custom_heat = c2.number_input("Process heat (GJ/t dry)", 0.0, 20.0, float(cfg["process_heat_GJ_t_dry"]), 0.1, key=f"custom_heat_{custom_tech_name}")
-        custom_electricity = c3.number_input("Electricity (kWh/t dry)", 0.0, 2000.0, float(cfg["electricity_kWh_t_dry"]), 5.0, key=f"custom_electricity_{custom_tech_name}")
-        c1,c2,c3 = st.columns(3)
-        custom_capex = c1.number_input("CAPEX (USD per t/y)", 0.0, 20000.0, float(cfg["capex_usd_per_tpy"]), 50.0, key=f"custom_capex_{custom_tech_name}")
-        custom_fixed_opex = c2.number_input("Fixed OPEX / CAPEX", 0.0, 0.5, float(cfg["fixed_opex_fraction"]), 0.01, key=f"custom_fixed_opex_{custom_tech_name}")
-        custom_char_c = c3.number_input("Product carbon fraction", 0.0, 1.0, float(cfg["char_C_fraction"]), 0.01, key=f"custom_char_c_{custom_tech_name}")
-        custom_stable_c = st.number_input("Stable carbon fraction", 0.0, 1.0, float(cfg["stable_C_fraction"]), 0.01, key=f"custom_stable_c_{custom_tech_name}")
-        st.markdown("#### 3. Custom commercial assumptions (USD)")
-        mkt = COUNTRY_SCENARIOS[custom_country]
-        c1,c2,c3 = st.columns(3)
-        custom_feed_cost = c1.number_input("Feedstock gate cost (USD/t received)", 0.0, 5000.0, float(mkt["feedstock_gate_usd_t"]), 1.0, key=f"custom_feed_cost_{custom_country}")
-        custom_elec_price = c2.number_input("Electricity price (USD/kWh)", 0.0, 5.0, float(mkt["electricity_usd_kwh"]), 0.01, key=f"custom_elec_price_{custom_country}")
-        custom_heat_price = c3.number_input("Thermal energy price (USD/GJ)", 0.0, 500.0, float(mkt["heat_fuel_usd_GJ"]), 1.0, key=f"custom_heat_price_{custom_country}")
-        c1,c2,c3 = st.columns(3)
-        custom_labour = c1.number_input("Labour (USD/t dry)", 0.0, 1000.0, float(mkt["labour_usd_t_y"]), 1.0, key=f"custom_labour_{custom_country}")
-        custom_logistics = c2.number_input("Logistics (USD/t-km)", 0.0, 5.0, float(mkt["logistics_usd_t_km"]), 0.01, key=f"custom_logistics_{custom_country}")
-        custom_product_price = c3.number_input("Product price (USD/t)", 0.0, 10000.0, float(mkt["char_price_usd_t"]), 5.0, key=f"custom_product_price_{custom_country}")
-        custom_demand = st.number_input("Annual addressable demand (t/y)", 0.0, 10000000.0, float(mkt["demand_char_t_y"]), 250.0, key=f"custom_demand_{custom_country}")
-        custom_energy_mult = st.number_input("Energy-demand multiplier", 0.1, 5.0, 1.0, 0.05, key="custom_energy_mult")
-        run_custom = st.form_submit_button("Run custom scenario", type="primary")
+# ================================================================== ECONOMIC
+elif page == "Economic":
+    header("Economic", "See where the money goes, where revenue comes from, and which assumptions control project viability.")
+    with st.expander("Edit financial assumptions · placeholder values until verified", expanded=False): S.economics = econ_inputs("econ")
+    R = pipeline(); t, ec, p, e = R["t"], R["ec"], R["p"], R["e"]
+    st.markdown(f"**Technical basis:** {R['proc']['label']} \u00b7 {S.design['feed'] if PRED() else 'manual inputs'} \u00b7 {p.reactor_temp_C:.0f} \u00b0C \u00b7 {fmt(t['char_t_y'])} t/y solid \u00b7 removal proxy {fmt(t['net_removal_proxy_tco2e_y'])} tCO\u2082e/y")
+    be = breakeven_carbon_price(ec, t)
+    kpis([("Revenue", fmt(ec["total_revenue_usd_y"]), "", "USD/y"), ("Operating cost", fmt(ec["operating_cost_usd_y"]), "", "USD/y"), ("Economic surplus", fmt(ec["annual_economic_surplus_usd_y"]), "after capital recovery", "USD/y"),
+          ("NPV", fmt(ec["npv_usd"]), "", "USD"), ("IRR", f"{ec['irr']:.1%}" if ec["irr"] is not None else "n/a", f"payback {fmt(ec['simple_payback_y'])} y" if ec["simple_payback_y"] else ""), ("Breakeven carbon price", fmt(be) if be is not None else "n/a", "surplus = 0", "USD/t")])
+    st.info("Follow the financial story from left to right: project cash flow → cost and revenue drivers → unit economics → sensitivity → calculation audit. Edit the assumptions above to test a scenario; replace placeholder values with quotations before treating results as investment estimates.")
+    tabs = st.tabs(["1 · Cash flow", "2 · Cost & revenue drivers", "3 · Unit economics", "4 · Sensitivity", "5 · Calculation log", "6 · Model equations"])
+    with tabs[0]:
+        st.caption("This is the project-level cash-flow picture: initial capital outlay followed by the modelled annual operating cash flow. It is undiscounted in this chart; NPV is shown above.")
+        yrs = np.arange(0, int(e.project_life_y) + 1); cum = -e.capex_usd + ec["ebitda_like_usd_y"] * yrs
+        fig = go.Figure(go.Scatter(x=yrs, y=cum, fill="tozeroy", line=dict(color=GREEN, width=3), fillcolor="rgba(31,122,90,.15)")); fig.add_hline(y=0, line_color=GREY)
+        fig.update_layout(xaxis_title="Year", yaxis_title="USD", title="Cumulative cash flow (undiscounted)")
+        with st.container(border=True): st.plotly_chart(style_fig(fig, 340, legend=False), width="stretch")
+        st.caption("Constant annual EBITDA-like cash flow; no taxes, debt, working capital, escalation or replacement CAPEX.")
+    with tabs[1]:
+        st.caption("Positive bars are revenue; negative bars are costs. This view identifies the largest contributors to annual operating performance.")
+        rows = [["Feedstock + logistics", -ec["feedstock_logistics_cost_usd_y"]], ["Electricity", -ec["electricity_cost_usd_y"]], ["Purchased heat", -ec["purchased_heat_cost_usd_y"]], ["Labour", -ec["labour_usd_y"]], ["Maintenance", -ec["maintenance_usd_y"]],
+                ["Other OPEX", -ec["other_opex_usd_y"]], ["Biochar sales", ec["char_revenue_usd_y"]], ["Liquid sales", ec["liquid_revenue_usd_y"]], ["Electricity export", ec["electricity_revenue_usd_y"]], ["Carbon credits", ec["carbon_revenue_usd_y"]]]
+        df = pd.DataFrame(rows, columns=["Item", "USD/y"]); df["Type"] = np.where(df["USD/y"] >= 0, "Revenue", "Cost")
+        with st.container(border=True): st.plotly_chart(style_fig(px.bar(df, x="Item", y="USD/y", color="Type", color_discrete_map={"Revenue": GREEN, "Cost": RED}), 340), width="stretch")
+        if e.carbon_credit_usd_tco2e > 0: st.warning("Carbon revenue assumes the removal proxy is verified and creditable. It is a screening proxy today.")
+    with tabs[2]:
+        st.caption("Unit economics normalise the project totals by tonnes of product or tonnes of removal proxy. These are scenario-derived costs, not market quotations.")
+        char = max(t["char_t_y"], 1e-9); rem = t["net_removal_proxy_tco2e_y"]; tc = ec["operating_cost_usd_y"] + ec["annualised_capex_usd_y"]; nan = float("nan")
+        u = pd.DataFrame([["Full cost per tonne solid product", tc / char, "USD/t"], ["Cost per tCO2e removed (full cost)", tc / rem if rem > 0 else nan, "USD/tCO2e"],
+                          ["Cost per tCO2e net of non-carbon revenue", max(0, tc - (ec["total_revenue_usd_y"] - ec["carbon_revenue_usd_y"])) / rem if rem > 0 else nan, "USD/tCO2e"], ["Breakeven carbon price", be if be is not None else nan, "USD/tCO2e"],
+                          ["Assumed carbon price", e.carbon_credit_usd_tco2e, "USD/tCO2e"]], columns=["Metric", "Value", "Unit"])
+        st.dataframe(u.round(2), width="stretch", hide_index=True); st.caption("Compare with the indicative biochar range on the dashboard (IPCC AR6, roughly 10-345 USD/tCO2; still to be re-verified).")
+    with tabs[3]:
+        st.caption("Change one input at a time and see how much annual economic surplus moves. This is a local sensitivity screen; it does not capture interactions between variables.")
+        swing = st.slider("Swing on each input (\u00b1%)", 5, 50, 20, 5) / 100; base, rows = tornado(p, e, swing); fig = go.Figure()
+        fig.add_trace(go.Bar(y=[r["input"] for r in rows], x=[r["low"] for r in rows], orientation="h", name=f"-{swing:.0%}", marker_color=RED)); fig.add_trace(go.Bar(y=[r["input"] for r in rows], x=[r["high"] for r in rows], orientation="h", name=f"+{swing:.0%}", marker_color=GREEN))
+        fig.update_layout(barmode="overlay", yaxis=dict(autorange="reversed"), xaxis_title="Change in annual economic surplus (USD/y)")
+        with st.container(border=True): st.plotly_chart(style_fig(fig, 420), width="stretch")
+        st.caption(f"Base surplus {base:,.0f} USD/y. One-at-a-time swings; interactions not shown.")
+    with tabs[4]:
+        st.caption("Every row shows the equation, numerical inputs, calculated result, units and model/source identifier. Download the table to audit or reuse the scenario calculations.")
+        log_view(log_economic(R), "economic_log")
+        source_note(["ECON-001"])
+    with tabs[5]:
+        st.caption("Definitions of the financial equations used by the screening model.")
+        render_math("economic")
+    ai_panel("Economic", snapshot(R, ["technical", "economics"]), fallback=[f"Economic surplus {fmt(ec['annual_economic_surplus_usd_y'])} USD/y; breakeven carbon price {fmt(be) if be is not None else 'n/a'}."])
 
-    if run_custom:
-        market_custom = mkt.copy()
-        market_custom.update({"feedstock_gate_usd_t":custom_feed_cost,"electricity_usd_kwh":custom_elec_price,
-            "heat_fuel_usd_GJ":custom_heat_price,"labour_usd_t_y":custom_labour,
-            "logistics_usd_t_km":custom_logistics,"char_price_usd_t":custom_product_price,
-            "demand_char_t_y":custom_demand})
-        tech_custom = {"char_yield":custom_yield,"process_heat_GJ_t_dry":custom_heat,
-            "electricity_kWh_t_dry":custom_electricity,"capex_usd_per_tpy":custom_capex,
-            "fixed_opex_fraction":custom_fixed_opex,"char_C_fraction":custom_char_c,
-            "stable_C_fraction":custom_stable_c}
-        custom_result = evaluate_configuration(custom_country,custom_feedstock,custom_feed_rate,custom_moisture,
-            custom_distance,custom_tech_name,custom_route,custom_availability,capex_multiplier=custom_capex_mult,
-            energy_multiplier=custom_energy_mult,market_override=market_custom,technology_override=tech_custom)
-        if custom_result:
-            custom_result["scenario_name"] = f"Custom {len(st.session_state.get('custom_scenarios', []))+1}"
-            st.session_state.setdefault("custom_scenarios", []).append(custom_result)
-            st.session_state["last_custom_result"] = custom_result
-
-    if st.session_state.get("last_custom_result"):
-        r = st.session_state["last_custom_result"]
-        st.markdown("#### Latest custom run")
-        a,b,c,d = st.columns(4)
-        a.metric("Solid product", f"{r['char_tpy']:,.1f} t/y")
-        b.metric("Annual economic surplus", f"${r['annual_economic_surplus_usd_y']:,.0f}")
-        c.metric("Screening net removal", f"{r['net_removal_tCO2py']:,.1f} tCO₂/y")
-        d.metric("Dry feed", f"{r['dry_feed_tpy']:,.1f} t/y")
-        st.dataframe(pd.DataFrame([r]).T.rename(columns={0:"Value"}), use_container_width=True)
-    saved = st.session_state.get("custom_scenarios", [])
-    if saved:
-        st.markdown("#### Custom scenario history")
-        custom_df = pd.DataFrame(saved)
-        custom_vals = custom_df[["annual_margin_usd_y","net_removal_tCO2py"]].to_numpy()
-        custom_df["pareto_optimal"] = [not (((custom_vals[:,0]>=m)&(custom_vals[:,1]>=c)&((custom_vals[:,0]>m)|(custom_vals[:,1]>c))).any()) for m,c in custom_vals]
-        st.dataframe(custom_df[["scenario_name","country","feedstock","technology","route","dry_feed_tpy","char_tpy","annual_margin_usd_y","net_removal_tCO2py","pareto_optimal"]], use_container_width=True)
-        st.plotly_chart(px.scatter(custom_df,x="net_removal_tCO2py",y="annual_margin_usd_y",color="pareto_optimal",hover_data=["scenario_name","technology","route"],labels={"net_removal_tCO2py":"Screening net removal (tCO₂/y)","annual_margin_usd_y":"Annual margin (USD/y)"}),use_container_width=True)
-        st.download_button("Download custom scenario results (CSV)",custom_df.to_csv(index=False),"custom_biochar_scenarios.csv","text/csv")
-        if st.button("Clear custom scenario history"):
-            st.session_state["custom_scenarios"] = []
-            st.session_state.pop("last_custom_result", None)
-            st.rerun()
-    else:
-        st.info("No custom scenarios have been run in this session yet. The supplied baseline results are not mixed into this workspace.")
-
-elif page == "Sensitivity":
-    st.markdown('<div class="eyebrow">Robustness check</div>', unsafe_allow_html=True)
-    st.header("Sensitivity analysis")
-    with st.spinner("Evaluating feedstock-cost, CAPEX and energy-demand multipliers..."):
-        sensitivity = run_sensitivity(country, feedstock, feed_tpy, moisture, transport_km, availability)
-    st.caption("Deterministic scenario grid, not a probabilistic uncertainty analysis.")
-    st.dataframe(sensitivity, use_container_width=True)
-    if len(sensitivity):
-        st.plotly_chart(px.scatter(sensitivity, x="best_margin_usd_y", y="net_removal_tCO2py",
-                                   color="best_technology", symbol="best_route",
-                                   labels={"best_margin_usd_y":"Best annual margin (USD/y)",
-                                           "net_removal_tCO2py":"Screening net removal (tCO₂/y)"}),
-                        use_container_width=True)
-    st.download_button("Download sensitivity grid", sensitivity.to_csv(index=False), "mena_sensitivity.csv", "text/csv")
-
-elif page == "AI analyst":
-    st.markdown('<div class="eyebrow">Decision support</div>', unsafe_allow_html=True)
-    st.header("AI analyst")
-    st.write("Ask for an explanation of the current scenario. The LLM receives structured outputs and assumptions; calculations and optimisation remain deterministic.")
-    session_key = st.text_input("Groq API key (optional; session only)", type="password", key="groq_session_key")
-    if len(results):
-        top = results.iloc[0].to_dict()
-        context = {
-            "selected_inputs":{"country":country,"feedstock":feedstock,"feedstock_received_tpy":feed_tpy,
-                               "moisture_wet_basis":moisture,"transport_km":transport_km,
-                               "availability":availability,"capex_multiplier":capex_mult,"energy_multiplier":energy_mult},
-            "top_ranked_scenario_by_current_sort":top,
-            "pareto_count":len(pareto),
-            "cdr_credit_revenue_enabled":False,
-            "model_status":"screening prototype; country/technology inputs are placeholders until verified",
-            "validation_warning":model_validation_warning(),
-            "application_note":"Application gates are screening only, not certification."
+# ================================================================== OPTIMIZE
+else:
+    header("Design optimiser", "Compare feasible slow-pyrolysis designs using the same feedstock, plant basis and technical/economic models.")
+    pred = get_predictor()
+    st.info("Scope: this optimiser currently searches slow pyrolysis only. Fast pyrolysis, torrefaction, gasification and HTC use screening-level or cross-process assumptions and are not comparable enough for a defensible combined optimum.")
+    with st.container(border=True):
+        st.subheader("1 · Define the design problem")
+        st.caption("Fixed plant basis is inherited from the Technical and Economic pages. Choose which feedstocks and operating conditions the optimiser may vary.")
+        feeds = st.multiselect("Feedstocks to compare", list(FEEDSTOCKS), default=[S.design.get("feed", "Rice straw")] if S.design.get("feed", "Rice straw") in FEEDSTOCKS else ["Rice straw"])
+        a, b = st.columns(2)
+        temp_range = a.slider("Reactor temperature search range (°C)", 300, 800, (400, 600), 10)
+        duration_choices = b.multiselect("Residence times to test (min)", [15, 30, 60, 120, 240], default=[30, 60, 120])
+        a, b = st.columns(2)
+        cc = a.number_input("Carbon-credit scenario price (USD/tCO₂e)", min_value=0.0, max_value=1000.0, value=float(S.economics.carbon_credit_usd_tco2e), step=5.0, help="Scenario assumption only; zero excludes carbon revenue.")
+        ls = b.slider("Liquid fraction of non-char products", 0.0, 1.0, float(S.design["liquid_share"]), 0.05)
+        st.subheader("2 · Define the objective and feasibility rules")
+        a, b = st.columns(2)
+        objective = a.selectbox("Primary objective", ["Maximize NPV", "Maximize annual economic surplus", "Maximize net removal proxy", "Minimize break-even carbon price"])
+        max_hc = b.number_input("Maximum biochar H/C ratio", min_value=0.1, max_value=2.0, value=0.7, step=0.05)
+        a, b = st.columns(2)
+        use_particle = a.checkbox("Require particle conversion within residence time", value=True)
+        safety = b.slider("Conversion-time safety factor", 1.0, 3.0, 1.5, 0.1, disabled=not use_particle)
+        st.caption("The H/C limit and particle conversion rule are engineering screening constraints. Particle properties (diameter, heat transfer and kinetics) are taken from the Technical page. The optimizer uses a nominal 0.30 char fraction and 5 s time steps for the particle screening calculation to keep the grid search responsive.")
+        run = st.button("Evaluate design grid", type="primary", disabled=not feeds or not duration_choices)
+    st.caption("Feedstock moisture, carbon content, feedstock cost and logistics are preset screening assumptions in engine/design.py. Verify them against local measurements and supplier data before treating rankings as investment recommendations.")
+    if run and feeds and duration_choices:
+        be_ = replace(S.economics, carbon_credit_usd_tco2e=float(cc))
+        with st.spinner("Evaluating candidate operating points..."):
+            pp = make_pp(float(sum(temp_range)/2), 0.3, "slow_pyrolysis") if use_particle else None
+            rows, front, stats = search_designs(
+                pred, S.process, be_, feeds=feeds, htt_range=temp_range, step=20,
+                durations=tuple(duration_choices), rates=(5, 10, 20), max_hc=float(max_hc),
+                liquid_share=ls, processes=("slow_pyrolysis",),
+                particle={"slow_pyrolysis": pp} if pp else None, safety=safety
+            )
+        for r_ in rows:
+            gap = r_["annualised_capex_usd_y"] + r_["operating_cost_usd_y"] - (r_["total_revenue_usd_y"] - r_["carbon_revenue_usd_y"])
+            r_["breakeven_cc"] = max(0.0, gap / r_["net_removal_proxy_tco2e_y"]) if r_["net_removal_proxy_tco2e_y"] > 0 else float("inf")
+        objective_keys = {
+            "Maximize NPV": lambda r_: -r_["npv_usd"],
+            "Maximize annual economic surplus": lambda r_: -r_["annual_economic_surplus_usd_y"],
+            "Maximize net removal proxy": lambda r_: -r_["net_removal_proxy_tco2e_y"],
+            "Minimize break-even carbon price": lambda r_: r_["breakeven_cc"],
         }
-        question = st.text_area("Question", "Explain the main economic drivers, carbon-screening trade-offs and the most important data gaps.")
-        if st.button("Generate explanation", type="primary"):
-            try:
-                with st.spinner("Generating explanation..."):
-                    st.markdown(explain_with_groq(question, context, api_key=session_key or None))
-            except Exception as exc:
-                st.error(str(exc))
-    else:
-        st.warning("Run a scenario with feasible outputs before asking the analyst.")
-    st.caption("A key entered above is session-only. For a permanent deployment, use the hosting provider’s server-side secret manager. Never commit a key to Git or put it in the notebook.")
-
-st.divider()
-st.caption("Decision-support prototype • All outputs require project-specific engineering, laboratory, commercial and regulatory validation.")
+        S.opt = {"rows": rows, "front": front, "stats": stats, "objective": objective, "cc": cc, "ls": ls,
+                 "processes": ["slow_pyrolysis"], "constrain": True, "max_hc": max_hc,
+                 "use_particle": use_particle, "safety": safety, "temp_range": temp_range,
+                 "durations": duration_choices, "best": min(rows, key=objective_keys[objective]) if rows else None}
+    o = S.get("opt")
+    tabs = st.tabs(["Recommended design", "Compare candidates", "Calculation & constraints", "Model scope"])
+    with tabs[0]:
+        if o:
+            st.caption(f"Objective: {o['objective']} · Slow pyrolysis · {o['temp_range'][0]}–{o['temp_range'][1]} °C · residence times {', '.join(map(str, o['durations']))} min")
+            st.metric("Candidate operating points evaluated", f"{o['stats']['evaluated']:,}")
+            if o["best"]:
+                best = o["best"]
+                st.success("Best feasible candidate within the tested grid — not a globally proven optimum.")
+                kpis([("Feedstock", best["feedstock"], "screening preset"), ("Temperature", f"{best['HTT']:.0f} °C", "reactor set point"),
+                      ("Residence time", f"{best['duration_min']:.0f} min", "tested grid"), ("Heating rate", f"{best['heating_rate']:.0f} °C/min", "tested grid"),
+                      ("Biochar", fmt(best["char_t_y"]), "t/y"), ("Predicted H/C", f"{best['pred_H_C']:.2f}", "model prediction"),
+                      ("Annual surplus", fmt(best["annual_economic_surplus_usd_y"]), "USD/y"),
+                      ("NPV", fmt(best["npv_usd"]), "USD"),
+                      ("Net removal proxy", fmt(best["net_removal_proxy_tco2e_y"]), "tCO₂e/y")])
+                if best["extrapolating"]: st.warning("This candidate uses extrapolated ML property predictions; do not treat its ranking as reliable.")
+                if best.get("particle_kinetics_extrapolated", False): st.warning("Particle kinetics are extrapolated: the cited beech-wood kinetic fit covers approximately 300–435 °C, while this candidate is outside that range.")
+                st.markdown("**Why this candidate was selected**")
+                st.write(f"It has the best value of **{o['objective']}** among {len(o['rows']):,} candidates that passed the enabled constraints. Its ranking is conditional on the selected feedstock presets, prices, carbon-credit scenario, particle assumptions and tested grid.")
+                st.write(f"Predicted char yield is {best['pred_yield_pct']:.1f}% and predicted H/C is {best['pred_H_C']:.2f}. The calculated heat deficit is {fmt(best['heat_deficit_GJ_y'])} GJ/y; estimated annual operating cost is {fmt(best['operating_cost_usd_y'])} USD/y.")
+                if st.button("Apply selected conditions to Technical and Economic", type="primary"):
+                    S.design = {"process": "slow_pyrolysis", "feed": best["feedstock"], "htt": float(best["HTT"]),
+                                "dur": float(best["duration_min"]), "hr": float(best["heating_rate"]), "liquid_share": o["ls"]}
+                    pr_ = PROCESSES["slow_pyrolysis"]
+                    S.particle["d"], S.particle["h"] = pr_["particle_defaults"]["d"], pr_["particle_defaults"]["h"]
+                    S.economics = replace(S.economics, carbon_credit_usd_tco2e=float(o["cc"]))
+                    S.yield_source = "Predicted (data-driven)"
+                    st.toast("Selected conditions applied to the active scenario.")
+            else:
+                st.warning("No candidate passed the enabled constraints. Review the H/C threshold, particle size and conversion-time assumptions, or expand the tested temperature/residence-time grid.")
+        else:
+            st.info("Define the design problem and select **Evaluate design grid**.")
+    with tabs[1]:
+        if o and o["rows"]:
+            df = pd.DataFrame(o["rows"])
+            show_cols = ["feedstock", "HTT", "duration_min", "heating_rate", "pred_yield_pct", "pred_H_C",
+                         "char_t_y", "heat_deficit_GJ_y", "operating_cost_usd_y", "annual_economic_surplus_usd_y",
+                         "npv_usd", "net_removal_proxy_tco2e_y", "breakeven_cc"]
+            st.dataframe(df[show_cols].rename(columns={"HTT":"Temperature °C", "duration_min":"Residence min",
+                "heating_rate":"Heating rate °C/min", "pred_yield_pct":"Predicted yield %", "pred_H_C":"H/C",
+                "char_t_y":"Biochar t/y", "heat_deficit_GJ_y":"Heat deficit GJ/y",
+                "operating_cost_usd_y":"OPEX USD/y", "annual_economic_surplus_usd_y":"Annual surplus USD/y",
+                "npv_usd":"NPV USD", "net_removal_proxy_tco2e_y":"Removal proxy tCO₂e/y",
+                "breakeven_cc":"Break-even carbon price USD/tCO₂e"}).round(2), width="stretch", hide_index=True)
+            st.caption("All monetary results are USD scenario estimates. Feedstock costs, product prices and CAPEX are assumptions, not supplier quotations.")
+            fr = pd.DataFrame(o["front"])
+            fig = px.scatter(df, x="net_removal_proxy_tco2e_y", y="npv_usd", color="feedstock",
+                             hover_data=["HTT", "duration_min", "heating_rate", "pred_yield_pct", "pred_H_C"])
+            if not fr.empty:
+                fig.add_trace(go.Scatter(x=fr.net_removal_proxy_tco2e_y, y=fr.npv_usd, mode="markers",
+                                         name="Pareto set (surplus vs removal)", marker=dict(size=13, symbol="star")))
+            fig.update_layout(xaxis_title="Net removal proxy (tCO₂e/y)", yaxis_title="NPV (USD)",
+                              title="Financial return versus carbon-removal proxy")
+            with st.container(border=True): st.plotly_chart(style_fig(fig, 430), width="stretch")
+        elif o:
+            st.warning("No feasible candidates to compare.")
+        else:
+            st.info("Run the design grid to compare candidate configurations.")
+    with tabs[2]:
+        if o:
+            st.subheader("Candidate accounting")
+            kpis([("Evaluated", f"{o['stats']['evaluated']:,}", "grid points"),
+                  ("Rejected: H/C", f"{o['stats']['rejected_hc']:,}", "above selected limit"),
+                  ("Rejected: conversion", f"{o['stats']['rejected_conversion']:,}", "residence time too short"),
+                  ("Rejected: carbon balance", f"{o['stats']['rejected_carbon']:,}", "carbon conservation check"),
+                  ("Feasible", f"{len(o['rows']):,}", "remaining candidates")])
+            st.markdown("**Selection rule**")
+            st.code({"Maximize NPV": "arg max NPV", "Maximize annual economic surplus": "arg max annual surplus",
+                     "Maximize net removal proxy": "arg max net removal proxy",
+                     "Minimize break-even carbon price": "arg min break-even carbon price"}[o["objective"]], language="text")
+            st.markdown("**Constraints applied**")
+            st.write(f"- Biochar H/C ≤ {o['max_hc']:.2f}")
+            st.write(f"- Particle conversion: {'required, with safety factor ' + str(o['safety']) if o['use_particle'] else 'not enforced'}")
+            st.write("- Carbon balance: char carbon cannot exceed feedstock carbon.")
+            st.write("**Important:** the search is exhaustive only over the discrete grid shown above. It does not optimize reactor geometry, pressure, heat-transfer equipment, scale, or supply-chain logistics.")
+            log_view(log_optimize(o, o["constrain"], o["use_particle"], o["safety"]), "optimize_log")
+        else:
+            st.info("Run the design grid to generate the calculation and rejection log.")
+    with tabs[3]:
+        st.markdown("### What this optimiser can and cannot establish")
+        st.markdown("- **Can:** rank discrete slow-pyrolysis temperature, residence-time, heating-rate and feedstock combinations using the current prediction, heat-balance and economic models.")
+        st.markdown("- **Cannot:** establish a plant-wide optimum, size a reactor, optimize process equipment, or validate local feedstock supply and prices.")
+        st.markdown("- **Model dependency:** yield and quality predictions are based on publication-grouped ML validation; per-target performance differs. Review Rough Estimates before relying on a prediction.")
+        st.markdown("- **Economic dependency:** CAPEX, biochar price, utility prices and feedstock logistics are scenario inputs. Results are not a bankable feasibility study.")
+        st.markdown("- **Carbon dependency:** removal is a screening proxy, not verified carbon removal or automatically creditable tonnes.")
+    R = pipeline()
+    ai_panel("Optimize", snapshot(R, ["prediction", "technical", "economics", "optimizer"]),
+             fallback=["Interpret the selected candidate against the tested alternatives, identify the binding constraints, and explain which assumptions most affect its ranking."])

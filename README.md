@@ -1,54 +1,30 @@
-# MENA Biochar Feedstock-to-Market Platform
+# MENA Biochar Engineering Platform (v4)
 
-Streamlit decision-support interface for the supplied V5 notebook. It includes an executive dashboard, technical calculation trace, application screening gates, Pareto optimisation, deterministic sensitivity analysis, and an optional Groq narrative analyst.
+Pages: **Executive dashboard** · **Rough estimates** (trained predictors) · **Technical** (balances, thermodynamics, particle heat transfer and kinetics) · **Economic** · **Optimize**.
+Every page has a **Mathematical model** tab (equations), a **Calculation log** tab (every step with inputs and sources) and an AI analyst panel.
 
-## Start on Windows
+Processes: slow pyrolysis (data-driven), fast pyrolysis, torrefaction, gasification, hydrothermal carbonisation (HTC / wet pyrolysis). Only slow pyrolysis is modelled from the dataset; the others use published typical product splits (Bridgwater 2012) or screening lines, flagged as such.
 
-The easiest method is to extract the ZIP and double-click `RUN_PLATFORM.bat`. It creates a Python 3.11 virtual environment, installs dependencies, and launches the app. Open `http://localhost:8501` if the browser does not open automatically. See `RUN_ME_FIRST.md`.
+## AI analyst
+Groq API (OpenAI-compatible). Key in the sidebar, `.streamlit/secrets.toml` (`GROQ_API_KEY = "..."`) or the `GROQ_API_KEY` environment variable. Never commit a key.
 
-## Groq setup (optional)
-
-You do **not** need to find a Settings page to use the app. Open the **AI analyst** page in the running app and paste a newly rotated Groq API key into the password field. It is held only in the current Streamlit session and is not written to disk. The app works without Groq. For a persistent cloud deployment, configure the key in the hosting provider's server-side secret manager.
-
-A key previously pasted into a chat should be considered exposed: revoke it and generate a new one before use. Never commit a key to Git or place it in the notebook/source files.
-
-## Included workspaces
-
-- Executive dashboard: EBITDA-like operating surplus, annual economic surplus after annualised capital recovery, screening removal proxy, throughput, and scenario comparison.
-- Technical analysis: mass, cost, revenue, and application gate trace.
-- Optimisation: Pareto set for annual economic surplus and screening net removal.
-- Sensitivity: deterministic grid for feedstock cost, CAPEX, and energy demand.
-- AI analyst: optional narrative explanation of structured platform outputs.
-
-## Scientific and commercial boundaries
-
-This is a transparent screening prototype, not a bankable feasibility study, process guarantee, certification engine, or carbon-credit calculator. Country prices/costs, process yields, energy demand, CAPEX, market demand and stable-carbon fractions are editable notebook placeholders until replaced by local quotations, measured plant data and verified LCA/MRV inputs. EBITDA-like surplus excludes annualised capital recovery; annual economic surplus deducts that capital charge. NPV, IRR and payback are not calculated because full project cash-flow, tax, working-capital and financing schedules are not modelled. Energy-export revenue uses explicit GJ/year × USD/GJ assumptions, not tonnes × USD/GJ. These energy-yield/LHV assumptions remain illustrative placeholders. Net removal is a simplified screening proxy, not verified or creditable removal. Carbon-credit revenue remains disabled. Application gates are screening only and do not establish certification.
-
-The calculation engine follows the core scenario equations and assumptions in `reference/MENA_Biochar_Optimisation_Platform_V5.ipynb`. The separate coproduct workbook model is slow-pyrolysis-specific and is not treated as a generic energy model here. Research ML results are not used to generate plant guarantees or optimise project economics.
-
-## Run manually
-
+## Run
 ```powershell
 py -3.11 -m venv .venv
-.venv\Scripts\Activate.ps1
+.venv\Scripts\activate
 pip install -r requirements.txt
 streamlit run app.py
+pytest -q
 ```
+See CHANGELOG.md and docs/VALIDATION_ROADMAP.md.
+
+
+## Engineering model documentation
+
+See [`docs/TECHNICAL_MODEL_REFERENCE.md`](docs/TECHNICAL_MODEL_REFERENCE.md) for the governing equations, variable definitions, units, assumptions, numerical methods, validity domains and limitations for the mass/energy balances, particle heat-transfer model, one-step devolatilisation kinetics, data-driven predictor, carbon screen, economics and optimiser.
+
+The platform's particle kinetics are a single global first-order model; they are not a detailed multi-reaction biomass chemistry model. Read the validity warnings before using calculated conversion times as design constraints.
 
 ## Tests
 
-```powershell
-pytest -q
-```
-
-## Cloud deployment
-
-Deploy `app.py` from a private Git repository to Streamlit Community Cloud or a managed container host. Set `GROQ_API_KEY` as a server-side secret if you want a persistent deployment key. Do not upload `.env`, `.streamlit/secrets.toml`, or API keys to the repository. For container deployment, see `DEPLOYMENT.md`.
-
-## Before operational use
-
-1. Replace every placeholder with traceable local project data and provenance.
-2. Validate mass/energy balances and equipment guarantees with vendors and engineering design.
-3. Add authentication, authorisation, project persistence and audit logging before multi-user deployment.
-4. Validate all regulatory/product routes with accredited laboratories and jurisdiction-specific requirements.
-5. Complete an independently reviewed LCA/MRV and applicable methodology assessment before any CDR claim.
+Run `pytest -q` from the project root.

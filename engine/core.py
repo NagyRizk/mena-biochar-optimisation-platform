@@ -40,7 +40,7 @@ ROUTES = {
  'solid_fuel': dict(price_key=None, route_cost_usd_t=20, demand_fraction=1.0, needs_quality=False),
  'soil_screening': dict(price_key='char_price_usd_t', route_cost_usd_t=45, demand_fraction=0.2, needs_quality=True),
 }
-ENERGY_VALUE_USD_GJ = 4.0
+ENERGY_VALUE_USD_GJ = 4.0  # illustrative energy-sale price, USD/GJ; replace with an offtake quote
 CDR_CREDITING_ENABLED = False
 CDR_ACCOUNTING_INPUTS_VERIFIED = False
 DISCOUNT_RATE = 0.12
@@ -65,64 +65,111 @@ def capital_recovery_factor(rate, years):
 def evaluate_configuration(country, feedstock, feed_tpy_as_received, moisture_wb, transport_km,
                            technology, route, availability=0.85, char_price_override=None,
                            carbon_credit_price=None, capex_multiplier=1.0, energy_multiplier=1.0,
-                           market_override=None, technology_override=None, discount_rate=DISCOUNT_RATE, plant_life_y=PLANT_LIFE_Y, route_override=None):
+                           market_override=None, technology_override=None, discount_rate=DISCOUNT_RATE,
+                           plant_life_y=PLANT_LIFE_Y, route_override=None):
+    """Evaluate one steady-state case; all commercial inputs are screening assumptions.
+
+    EBITDA-like operating surplus excludes capital recovery. Annual economic surplus
+    deducts the annualised capital charge and is retained as the optimisation objective.
+    """
     if technology not in TECHNOLOGIES or feedstock not in FEEDSTOCKS or country not in COUNTRY_SCENARIOS:
-        raise ValueError('Unknown country, feedstock or technology')
-    tech=TECHNOLOGIES[technology].copy(); tech.update(technology_override or {}); market=(market_override or COUNTRY_SCENARIOS[country])
-    if route not in tech['allowed_routes'] or route not in ROUTES:
+        raise ValueError("Unknown country, feedstock or technology")
+    if not (0 <= discount_rate <= 1) or plant_life_y < 1:
+        raise ValueError("Discount rate must be in [0, 1] and plant life at least one year")
+    if capex_multiplier < 0 or energy_multiplier < 0:
+        raise ValueError("CAPEX and energy multipliers must be non-negative")
+    tech = TECHNOLOGIES[technology].copy()
+    tech.update(technology_override or {})
+    market = (market_override or COUNTRY_SCENARIOS[country]).copy()
+    if route not in tech["allowed_routes"] or route not in ROUTES:
         return None
-    if not (0 <= moisture_wb < 0.9): raise ValueError('Moisture must be a wet-basis fraction between 0 and 0.9')
+    if not (0 <= moisture_wb < 0.9):
+        raise ValueError("Moisture must be a wet-basis fraction between 0 and 0.9")
     if feed_tpy_as_received < 0 or transport_km < 0 or not (0 < availability <= 1):
         raise ValueError("Feed rate and transport must be non-negative; availability must be in (0, 1].")
-    processed_feed_tpy_as_received = feed_tpy_as_received*availability
-    dry_feed_tpy = processed_feed_tpy_as_received*(1-moisture_wb)
-    water_per_dry_t = moisture_wb/max(1-moisture_wb,1e-9)
-    drying_heat_GJ_t_dry = water_per_dry_t*2.6/0.70
-    total_heat_GJ_t_dry = (drying_heat_GJ_t_dry+tech['process_heat_GJ_t_dry'])*energy_multiplier
-    char_tpy = dry_feed_tpy*tech['char_yield']
-    feed_cost = processed_feed_tpy_as_received*market['feedstock_gate_usd_t']
-    transport_cost = processed_feed_tpy_as_received*transport_km*market['logistics_usd_t_km']
-    electricity_cost = dry_feed_tpy*tech['electricity_kWh_t_dry']*market['electricity_usd_kwh']*energy_multiplier
-    heat_cost = dry_feed_tpy*total_heat_GJ_t_dry*market['heat_fuel_usd_GJ']
-    installed_capex = dry_feed_tpy*tech['capex_usd_per_tpy']*capex_multiplier
-    annual_capital = installed_capex*capital_recovery_factor(discount_rate,plant_life_y)
-    fixed_opex = installed_capex*tech['fixed_opex_fraction']
-    labour = dry_feed_tpy*market['labour_usd_t_y']
-    route_cfg=ROUTES[route].copy(); route_cfg.update(route_override or {})
-    route_cost = char_tpy*route_cfg['route_cost_usd_t']
-    if route_cfg['price_key']:
-        unit_price = market[route_cfg['price_key']]
-        marketable_char_t = min(char_tpy, market['demand_char_t_y']*route_cfg['demand_fraction'])
-        product_revenue = marketable_char_t*unit_price
-    else:
-        unit_price = ENERGY_VALUE_USD_GJ
-        marketable_char_t = char_tpy
-        product_revenue = char_tpy*unit_price
-    eligible_for_cdr = route=='cdr' and tech['product']=='biochar'
-    gross_stable_C_t = char_tpy*tech['char_C_fraction']*tech['stable_C_fraction'] if eligible_for_cdr else 0.0
-    gross_stable_CO2_t = gross_stable_C_t*44/12
-    heat_emissions = dry_feed_tpy*total_heat_GJ_t_dry*0.056
-    grid_emissions = dry_feed_tpy*tech['electricity_kWh_t_dry']*0.00045
-    logistics_emissions = processed_feed_tpy_as_received*transport_km*0.00008
-    lifecycle_emissions_tCO2 = heat_emissions+grid_emissions+logistics_emissions
-    net_removal_tCO2 = max(0.0,gross_stable_CO2_t-lifecycle_emissions_tCO2) if eligible_for_cdr else 0.0
-    c_price = carbon_credit_price if carbon_credit_price is not None else market['carbon_price_usd_t']
+
+    processed_feed_tpy_as_received = feed_tpy_as_received * availability
+    dry_feed_tpy = processed_feed_tpy_as_received * (1 - moisture_wb)
+    water_per_dry_t = moisture_wb / max(1 - moisture_wb, 1e-9)
+    drying_heat_GJ_t_dry = water_per_dry_t * 2.6 / 0.70
+    total_heat_GJ_t_dry = (drying_heat_GJ_t_dry + tech["process_heat_GJ_t_dry"]) * energy_multiplier
+    char_tpy = dry_feed_tpy * tech["char_yield"]
+
+    feed_cost = processed_feed_tpy_as_received * market["feedstock_gate_usd_t"]
+    transport_cost = processed_feed_tpy_as_received * transport_km * market["logistics_usd_t_km"]
+    electricity_cost = dry_feed_tpy * tech["electricity_kWh_t_dry"] * market["electricity_usd_kwh"] * energy_multiplier
+    heat_cost = dry_feed_tpy * total_heat_GJ_t_dry * market["heat_fuel_usd_GJ"]
+    installed_capex = dry_feed_tpy * tech["capex_usd_per_tpy"] * capex_multiplier
+    annual_capital = installed_capex * capital_recovery_factor(discount_rate, plant_life_y)
+    fixed_opex = installed_capex * tech["fixed_opex_fraction"]
+    labour = dry_feed_tpy * market["labour_usd_t_y"]
+
+    route_cfg = ROUTES[route].copy()
+    route_cfg.update(route_override or {})
+    route_cost = char_tpy * route_cfg["route_cost_usd_t"]
+    unit_price = float(char_price_override if char_price_override is not None else market["char_price_usd_t"])
+    energy_price = float(market.get("energy_price_usd_GJ", ENERGY_VALUE_USD_GJ))
+    marketable_char_t = min(char_tpy, market.get("demand_char_t_y", 0) * route_cfg["demand_fraction"]) if route_cfg["price_key"] else char_tpy
+    product_revenue = marketable_char_t * unit_price if route_cfg["price_key"] else 0.0
+
+    # Energy sales use an energy quantity, not tonnes multiplied directly by USD/GJ.
+    # These are explicit placeholder export yields/LHV values and are not plant guarantees.
+    energy_export_GJ_y = 0.0
+    if route == "energy_recovery":
+        energy_export_GJ_y = dry_feed_tpy * float(tech.get("energy_export_GJ_t_dry", 0.0)) * energy_multiplier
+    elif route == "solid_fuel":
+        energy_export_GJ_y = char_tpy * float(tech.get("solid_product_LHV_GJ_t", 0.0))
+    energy_revenue = energy_export_GJ_y * energy_price
+
+    eligible_for_cdr = route == "cdr" and tech["product"] == "biochar"
+    gross_stable_C_t = char_tpy * tech["char_C_fraction"] * tech["stable_C_fraction"] if eligible_for_cdr else 0.0
+    gross_stable_CO2_t = gross_stable_C_t * 44 / 12
+    heat_emissions = dry_feed_tpy * total_heat_GJ_t_dry * 0.056
+    grid_emissions = dry_feed_tpy * tech["electricity_kWh_t_dry"] * 0.00045
+    logistics_emissions = processed_feed_tpy_as_received * transport_km * 0.00008
+    lifecycle_emissions_tCO2 = heat_emissions + grid_emissions + logistics_emissions
+    net_removal_tCO2 = max(0.0, gross_stable_CO2_t - lifecycle_emissions_tCO2) if eligible_for_cdr else 0.0
+    c_price = carbon_credit_price if carbon_credit_price is not None else market["carbon_price_usd_t"]
     crediting_ready = bool(CDR_CREDITING_ENABLED and CDR_ACCOUNTING_INPUTS_VERIFIED)
-    carbon_revenue = net_removal_tCO2*c_price if (eligible_for_cdr and crediting_ready) else 0.0
-    total_cost = feed_cost+transport_cost+electricity_cost+heat_cost+annual_capital+fixed_opex+labour+route_cost
-    revenue = product_revenue+carbon_revenue
-    return {'country':country,'feedstock':feedstock,'technology':technology,'product_type':tech['product'],'route':route,
-      'processed_feed_tpy_as_received':processed_feed_tpy_as_received,'dry_feed_tpy':dry_feed_tpy,'char_tpy':char_tpy,'marketable_char_tpy':marketable_char_t,
-      'yield_dry_basis':tech['char_yield'],'gross_stable_CO2_tpy':gross_stable_CO2_t,
-      'lifecycle_emissions_tCO2py':lifecycle_emissions_tCO2,'net_removal_tCO2py':net_removal_tCO2,
-      'feedstock_cost_usd_y':feed_cost,'transport_cost_usd_y':transport_cost,'electricity_cost_usd_y':electricity_cost,
-      'heat_cost_usd_y':heat_cost,'annualised_capex_usd_y':annual_capital,'fixed_opex_usd_y':fixed_opex,
-      'labour_usd_y':labour,'route_cost_usd_y':route_cost,'product_revenue_usd_y':product_revenue,
-      'carbon_revenue_usd_y':carbon_revenue,'total_cost_usd_y':total_cost,'total_revenue_usd_y':revenue,
-      'annual_margin_usd_y':revenue-total_cost,'unit_product_price_usd_t':unit_price,
-      'eligible_for_CDR_screen':eligible_for_cdr,'CDR_credit_revenue_enabled':crediting_ready,
-      'net_removal_status':'SCREENING PROXY ONLY — NOT VERIFIED LCA/MRV','quality_status':'LAB TESTS REQUIRED — NOT CERTIFIED',
-      'mass_balance_note':'Yield and energy values are editable scenario placeholders; coproduct balance is a separate slow-pyrolysis module.'}
+    carbon_revenue = net_removal_tCO2 * c_price if (eligible_for_cdr and crediting_ready) else 0.0
+
+    operating_cost = feed_cost + transport_cost + electricity_cost + heat_cost + fixed_opex + labour + route_cost
+    total_revenue = product_revenue + energy_revenue + carbon_revenue
+    ebitda_like = total_revenue - operating_cost
+    total_cost_including_capital = operating_cost + annual_capital
+    economic_surplus = total_revenue - total_cost_including_capital
+    return {
+        "country": country, "feedstock": feedstock, "technology": technology,
+        "product_type": tech["product"], "route": route,
+        "processed_feed_tpy_as_received": processed_feed_tpy_as_received,
+        "dry_feed_tpy": dry_feed_tpy, "char_tpy": char_tpy,
+        "marketable_char_tpy": marketable_char_t,
+        "yield_dry_basis": tech["char_yield"],
+        "gross_stable_CO2_tpy": gross_stable_CO2_t,
+        "lifecycle_emissions_tCO2py": lifecycle_emissions_tCO2,
+        "net_removal_tCO2py": net_removal_tCO2,
+        "feedstock_cost_usd_y": feed_cost, "transport_cost_usd_y": transport_cost,
+        "electricity_cost_usd_y": electricity_cost, "heat_cost_usd_y": heat_cost,
+        "annualised_capex_usd_y": annual_capital, "fixed_opex_usd_y": fixed_opex,
+        "labour_usd_y": labour, "route_cost_usd_y": route_cost,
+        "operating_cost_usd_y": operating_cost,
+        "product_revenue_usd_y": product_revenue,
+        "energy_export_GJ_y": energy_export_GJ_y, "energy_revenue_usd_y": energy_revenue,
+        "carbon_revenue_usd_y": carbon_revenue,
+        "total_cost_usd_y": total_cost_including_capital,
+        "total_revenue_usd_y": total_revenue,
+        "ebitda_like_usd_y": ebitda_like,
+        "annual_economic_surplus_usd_y": economic_surplus,
+        "annual_margin_usd_y": economic_surplus,
+        "unit_product_price_usd_t": unit_price,
+        "energy_price_usd_GJ": energy_price,
+        "eligible_for_CDR_screen": eligible_for_cdr,
+        "CDR_credit_revenue_enabled": crediting_ready,
+        "net_removal_status": "SCREENING PROXY ONLY — NOT VERIFIED LCA/MRV",
+        "quality_status": "LAB TESTS REQUIRED — NOT CERTIFIED",
+        "finance_note": "EBITDA-like operating surplus excludes annualised capital recovery; annual economic surplus deducts it. NPV/IRR/payback are not calculated because project cash-flow, tax, working-capital and financing schedules are not modelled.",
+        "mass_balance_note": "Yield, energy export and LHV values are editable screening placeholders; no generic coproduct balance is implied."
+    }
 
 def application_gate(technology, route):
     if technology not in TECHNOLOGIES: raise ValueError("Unknown technology")

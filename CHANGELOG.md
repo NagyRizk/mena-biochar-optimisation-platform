@@ -1,5 +1,17 @@
 # Changelog
 
+## v4.2.0 - flow diagram and carbon credits
+- Process > Flow diagram: animated process flow (stream widths follow t/y and GJ/y), heat self-sufficiency badge, mass Sankey and new process-heat Sankey (engine/flows.py).
+- Economics > Carbon credits: CO2 removed per year, credit revenue, net of registry/MRV, per tonne biochar, break-even price, price sweep; one click applies the effective price to the model (engine/carbon.py).
+- Overview shows credits and credit revenue. Added tests/test_v41.py with independent hand calculations (34 tests pass).
+
+## v4.1.0 - 3D structure viewer and guided workflow
+- New 3D biochar structure viewer (Biochar step): atomic turbostratic lattice and porous particle section, driven by predicted H/C, temperature, ash and feedstock class. Offline three.js, stylised not simulated. Optional 400/600/800 C comparison.
+- New engine/structure.py (structure descriptors and generators) and viz3d.py + static/biochar3d component.
+- Navigation rebuilt as a numbered flow: Overview, 1 Evidence, 2 Biochar, 3 Process, 4 Economics, 5 Optimize, with clickable stepper, Back/Next buttons and quick-start presets.
+- One shared scenario in the sidebar replaces duplicated controls; optimizer results apply back to it.
+- Audit material (logs, equations, assumptions, verification) grouped into one Audit tab per page.
+
 ## v4.0.0
 - CFD removed (adapter, gating, tests, UI). The particle model remains and is labelled as reduced-order.
 - New process inputs: fast pyrolysis, torrefaction, gasification, HTC (steam-free slurry energy balance with heat recovery). Optimizer can compare processes.

@@ -15,7 +15,7 @@ h1, h2, h3, h4 { letter-spacing: -0.01em; }
 .ph h2 { margin: 0; font-size: 1.9rem; font-weight: 700; }
 .ph p { margin: .35rem 0 0; opacity: .66; font-size: 1rem; max-width: 62ch; }
 .sec { font-size: .74rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; opacity: .55; margin: 1.9rem 0 .7rem; }
-.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin: .3rem 0 1.2rem; }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(165px, 1fr)); gap: 12px; margin: .3rem 0 1.2rem; }
 .kpi { border: 1px solid rgba(127,140,150,.24); border-radius: 14px; padding: 14px 16px; background: rgba(127,140,150,.06); }
 .kpi .kl { font-size: .72rem; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; opacity: .6; }
 .kpi .kv { font-size: 1.55rem; font-weight: 700; line-height: 1.25; margin-top: 3px; overflow-wrap: anywhere; }
@@ -45,6 +45,26 @@ section[data-testid="stSidebar"] .stRadio label[data-baseweb="radio"]:has(input:
 .small { font-size: .84rem; opacity: .72; }
 .stButton > button[kind="primary"] { background: #1f7a5a; border-color: #1f7a5a; }
 .stButton > button, .stDownloadButton > button { border-radius: 9px; }
+
+.hero { border-radius: 18px; padding: 26px 30px 24px; background: linear-gradient(135deg, rgba(31,122,90,.22), rgba(59,130,160,.14) 60%, rgba(217,164,65,.10)); border: 1px solid rgba(31,122,90,.30); margin: 0 0 1.3rem; }
+.hero .eyebrow { font-size: .74rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: #1f7a5a; }
+.hero h1 { margin: .25rem 0 0; font-size: 2.15rem; line-height: 1.15; letter-spacing: -.02em; font-weight: 750; padding: 0; }
+.hero p { margin: .6rem 0 0; font-size: 1.05rem; opacity: .78; max-width: 68ch; }
+.tagrow { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+.tag { font-size: .78rem; padding: 4px 11px; border-radius: 999px; background: rgba(127,140,150,.16); font-weight: 600; }
+.strip { display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; border: 1px solid rgba(127,140,150,.24); border-radius: 12px; padding: 9px 14px; background: rgba(127,140,150,.06); margin: .1rem 0 1.1rem; font-size: .88rem; }
+.strip .lbl { font-size: .7rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; opacity: .55; }
+.strip .it { padding: 3px 10px; border-radius: 999px; background: rgba(31,122,90,.12); font-weight: 600; }
+.strip .hint { margin-left: auto; opacity: .55; font-size: .78rem; }
+.side-h { font-size: .7rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; opacity: .5; margin: .9rem 0 .25rem; }
+.stepnum { display: inline-flex; width: 26px; height: 26px; border-radius: 50%; align-items: center; justify-content: center; background: #1f7a5a; color: #fff; font-weight: 700; font-size: .85rem; margin-bottom: 6px; }
+.stepcard-t { font-weight: 700; font-size: 1.02rem; margin: 0; }
+.stepcard-d { font-size: .84rem; opacity: .68; margin: .2rem 0 .5rem; min-height: 3.6em; line-height: 1.4; }
+.flowbar { margin: 0 0 .9rem; }
+.flowbar .stButton > button { padding: .25rem .4rem; font-size: .82rem; font-weight: 600; min-height: 2.1rem; }
+.foot { border-top: 1px solid rgba(127,140,150,.22); margin: 2rem 0 .8rem; }
+.viewer-note { font-size: .8rem; opacity: .65; margin-top: .4rem; line-height: 1.45; }
+section[data-testid="stSidebar"] .stRadio [data-testid="stCaptionContainer"], section[data-testid="stSidebar"] .stRadio label p + div { opacity: .6; }
 </style>
 """
 

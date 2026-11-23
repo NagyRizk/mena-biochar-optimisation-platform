@@ -16,7 +16,13 @@ from engine.particle import ParticleParams, simulate_particle, verify_conduction
 from engine.pathways import pathways_df, SRC as PATH_SRC
 from engine.thermo import HAVE_COOLPROP
 from engine.mathdocs import BY_PAGE
+from engine.structure import descriptors, build_nano, build_micro
 from ai.llm import ask, list_models, LLMError, DEFAULT_MODEL
+import viz3d
+import streamlit.components.v1 as components
+from flowdiagram import pfd_html
+from engine.flows import energy_flows
+from engine.carbon import credit_calc, effective_price_on_gross
 
 st.set_page_config(page_title="MENA Biochar Platform", page_icon="\u267b\ufe0f", layout="wide", initial_sidebar_state="expanded")
 ui.inject()
@@ -37,7 +43,7 @@ S.setdefault("design", {"process": "slow_pyrolysis", "feed": "Date palm residues
 S.design.setdefault("process", "slow_pyrolysis")
 S.setdefault("yield_source", "Predicted (data-driven)")
 S.setdefault("particle", {"d": 20.0, "h": 50.0, "rho": 600.0, "kv": 0.15, "kc": 0.10, "cpv": 1500.0, "cpc": 1100.0, "lnA": 22.2, "E": 141.2, "dH": 0.0})
-S.setdefault("chat", {})
+S.setdefault("chat", {}); S.setdefault("nav", "Overview")
 PRED = lambda: S.yield_source.startswith("Predicted")
 PROC = lambda: PROCESSES[S.design["process"]]
 
@@ -177,16 +183,113 @@ def ai_panel(page, snap, fallback=None):
             with st.chat_message(h["role"]): st.markdown(h["content"])
         if hist and st.button("Clear conversation", key=f"clr_{page}"): S.chat[page] = []; st.rerun()
 
+@st.cache_data(show_spinner=False)
+def structure_cached(htt, hc, ash, cls):
+    d = descriptors(float(htt), float(hc), float(ash), cls)
+    return d, build_nano(d), build_micro(d)
+
+# ------------------------------------------------------------------ navigation, presets, callbacks
+NAV = {"Overview": ("Overview", "Start here"),
+       "Evidence": ("1 \u00b7 Evidence", "What the literature reports"),
+       "Biochar": ("2 \u00b7 Biochar", "Properties and 3D structure"),
+       "Process": ("3 \u00b7 Process", "Mass, heat, particle behaviour"),
+       "Economics": ("4 \u00b7 Economics", "Cash flow and sensitivity"),
+       "Optimize": ("5 \u00b7 Optimize", "Find the best design")}
+NAV_IDS = list(NAV)
+PRESETS = {
+    "Date palm \u00b7 540 \u00b0C": {"process": "slow_pyrolysis", "feed": "Date palm residues", "htt": 540, "dur": 120, "hr": 10, "liquid_share": 0.55},
+    "Rice straw \u00b7 450 \u00b0C": {"process": "slow_pyrolysis", "feed": "Rice straw", "htt": 450, "dur": 60, "hr": 10, "liquid_share": 0.55},
+    "Corn stover \u00b7 600 \u00b0C": {"process": "slow_pyrolysis", "feed": "Corn stover / cobs", "htt": 600, "dur": 60, "hr": 10, "liquid_share": 0.55},
+    "Olive stones \u00b7 650 \u00b0C": {"process": "slow_pyrolysis", "feed": "Olive stones / pits", "htt": 650, "dur": 120, "hr": 10, "liquid_share": 0.55},
+    "Sludge HTC \u00b7 220 \u00b0C": {"process": "htc", "feed": "Dewatered sewage sludge", "htt": 220, "dur": 60, "hr": 10, "liquid_share": 0.55},
+}
+
+def goto(page_id): S.nav = page_id
+
+def _dur_value(name, dur):
+    pr = PROCESSES[name]
+    if pr["dur_options"]:
+        return int(dur) if int(dur) in pr["dur_options"] else int(pr["dur_options"][3])
+    return float(dur)
+
+def apply_design(des):
+    """Callback: push a full design into the sidebar widgets (widget state can only be set from callbacks)."""
+    name = des["process"]; pr = PROCESSES[name]
+    S.sb_proc = name; S.sb_feed = des["feed"]
+    S[f"sb_htt_{name}"] = int(round(des["htt"])); S[f"sb_dur_{name}"] = _dur_value(name, des["dur"])
+    S.sb_hr = int(round(des.get("hr", 10))); S.sb_ls = float(des.get("liquid_share", 0.55))
+    S.design = {"process": name, "feed": des["feed"], "htt": float(des["htt"]), "dur": float(des["dur"]), "hr": float(des.get("hr", 10)), "liquid_share": float(des.get("liquid_share", 0.55))}
+    S.particle["d"], S.particle["h"] = pr["particle_defaults"]["d"], pr["particle_defaults"]["h"]
+    S.yield_source = "Predicted (data-driven)"
+
+def apply_cc_price(price):
+    S.economics = replace(S.economics, carbon_credit_usd_tco2e=float(price))
+    st.toast(f"Economic model now uses {price:,.1f} USD per tonne of gross stored CO\u2082 (after deductions and fees).")
+
+def apply_best(best, ls, cc):
+    apply_design({"process": "slow_pyrolysis", "feed": best["feedstock"], "htt": best["HTT"], "dur": best["duration_min"], "hr": best["heating_rate"], "liquid_share": ls})
+    S.economics = replace(S.economics, carbon_credit_usd_tco2e=float(cc))
+    st.toast("Design applied to the scenario. Review it in Process and Economics.")
+
+def on_proc_change():
+    name = S.sb_proc; pr = PROCESSES[name]; set_process(name)
+    S[f"sb_htt_{name}"] = int(pr["T_default"]); S[f"sb_dur_{name}"] = _dur_value(name, pr["dur_default"])
+
+def stepper(cur):
+    st.markdown('<div class="flowbar"></div>', unsafe_allow_html=True)
+    ids = ["Overview", "Evidence", "Biochar", "Process", "Economics", "Optimize"]
+    cols = st.columns([0.8, 1, 1, 1, 1, 1])
+    for c, sid in zip(cols, ids):
+        c.button("\u2302 Home" if sid == "Overview" else NAV[sid][0], key=f"fl_{sid}", type="primary" if sid == cur else "secondary", width="stretch", on_click=goto, args=(sid,))
+
+def nav_footer(cur):
+    i = NAV_IDS.index(cur)
+    st.markdown('<div class="foot"></div>', unsafe_allow_html=True)
+    a, _, b = st.columns([2, 3, 2])
+    if i > 0: a.button(f"\u2190 {NAV[NAV_IDS[i-1]][0]}", key="ft_prev", width="stretch", on_click=goto, args=(NAV_IDS[i-1],))
+    if i < len(NAV_IDS) - 1: b.button(f"{NAV[NAV_IDS[i+1]][0]} \u2192", key="ft_next", type="primary", width="stretch", on_click=goto, args=(NAV_IDS[i+1],))
+
+def scenario_strip():
+    d = S.design; pr = PROCESSES[d["process"]]
+    items = [pr["label"]] + ([d["feed"], f"{d['htt']:.0f} \u00b0C", f"{d['dur']:g} min"] + ([f"{d['hr']:.0f} \u00b0C/min"] if d["process"] == "slow_pyrolysis" else []) if PRED() else ["manual product yields"])
+    st.markdown('<div class="strip"><span class="lbl">Scenario</span>' + "".join(f'<span class="it">{x}</span>' for x in items) + '<span class="hint">change it in the sidebar</span></div>', unsafe_allow_html=True)
+
 # ------------------------------------------------------------------ sidebar
-PAGES = ["Executive dashboard", "Rough estimates", "Technical", "Economic", "Optimize"]
+def _init_widgets():
+    d = S.design
+    S.setdefault("sb_proc", d["process"]); S.setdefault("sb_feed", d["feed"]); S.setdefault("sb_hr", int(d["hr"])); S.setdefault("sb_ls", float(d["liquid_share"]))
+    for n, pr in PROCESSES.items():
+        S.setdefault(f"sb_htt_{n}", int(d["htt"]) if n == d["process"] else int(pr["T_default"]))
+        S.setdefault(f"sb_dur_{n}", _dur_value(n, d["dur"] if n == d["process"] else pr["dur_default"]))
+_init_widgets()
+S.setdefault("yield_source", "Predicted (data-driven)")
+
 with st.sidebar:
     st.markdown('<div class="brand">MENA Biochar<span>Engineering platform</span></div>', unsafe_allow_html=True)
     st.write("")
-    page = st.radio("Navigation", PAGES, label_visibility="collapsed")
-    st.write("")
-    d_ = S.design
-    st.markdown(f'<div class="scn"><b>Active scenario</b><br>{PROCESSES[d_["process"]]["label"]}<br>{d_["feed"] if PRED() else "manual inputs"} \u00b7 {d_["htt"]:.0f} \u00b0C</div>', unsafe_allow_html=True)
-    st.write("")
+    st.radio("Navigation", NAV_IDS, key="nav", format_func=lambda i: NAV[i][0], captions=[NAV[i][1] for i in NAV_IDS], label_visibility="collapsed")
+    page = S.nav
+    if page == "Evidence":
+        st.markdown('<div class="side-h">Scenario</div>', unsafe_allow_html=True)
+        st.caption("The literature evidence is independent of your scenario. Your scenario controls appear again from step 2.")
+    else:
+        st.markdown('<div class="side-h">Scenario</div>', unsafe_allow_html=True)
+        st.selectbox("Process", list(PROCESSES), key="sb_proc", format_func=lambda n: PROCESSES[n]["label"], on_change=on_proc_change)
+        _proc = S.sb_proc; _pr = PROCESSES[_proc]
+        if PRED():
+            st.selectbox("Feedstock", list(FEEDSTOCKS), key="sb_feed")
+            _lo, _hi = _pr["T"]
+            st.slider("Temperature (\u00b0C)", _lo, _hi, step=10 if _hi - _lo >= 100 else 5, key=f"sb_htt_{_proc}")
+            if _pr["dur_options"]: st.select_slider("Residence time (min)", list(_pr["dur_options"]), key=f"sb_dur_{_proc}")
+            else: st.number_input("Residence time (min)", 0.02, 600.0, step=0.5 if _pr["dur_default"] >= 1 else 0.01, key=f"sb_dur_{_proc}")
+            if _proc == "slow_pyrolysis":
+                st.slider("Heating rate (\u00b0C/min)", 5, 30, key="sb_hr")
+                with st.expander("More assumptions"):
+                    st.slider("Liquid share of non-char products", 0.0, 1.0, step=0.05, key="sb_ls", help="Assumption, not predicted: how the non-char remainder splits between liquid and gas.")
+        else:
+            st.info("Manual product yields are active. Enter them on the Process page, or switch back under Advanced.")
+    with st.expander("Advanced"):
+        st.radio("Product yields come from", ["Predicted (data-driven)", "Manual inputs"], key="yield_source", help="Manual inputs let you type your own char/liquid/gas fractions on the Process page.")
     with st.expander("AI analyst settings", expanded=not bool(get_key())):
         st.text_input("Groq API key", type="password", key="groq_key", help="Kept only in this browser session. Or set GROQ_API_KEY / st.secrets.")
         st.text_input("Model", value=DEFAULT_MODEL, key="groq_model")
@@ -194,30 +297,12 @@ with st.sidebar:
             try: S.groq_models = list_models(get_key())
             except LLMError as ex: st.error(str(ex))
         if S.get("groq_models"): st.caption("Available: " + ", ".join(S.groq_models[:12]))
-    st.caption("Screening-level tool. Costs and several process inputs are placeholders; see the Assumptions tab.")
+    st.caption("Screening-level tool. Costs and several process inputs are placeholders; see the assumptions on each page.")
+
+# keep the shared scenario dict in sync with the sidebar widgets
+_d = S.design; _d["process"] = S.sb_proc; _d["feed"] = S.sb_feed; _d["htt"] = float(S[f"sb_htt_{S.sb_proc}"]); _d["dur"] = float(S[f"sb_dur_{S.sb_proc}"]); _d["hr"] = float(S.sb_hr); _d["liquid_share"] = float(S.sb_ls)
 
 # ------------------------------------------------------------------ input helpers
-def scenario_controls(prefix):
-    d = S.design; names = list(PROCESSES)
-    with st.container(border=True):
-        c0, c1 = st.columns([2, 3])
-        sel = c0.selectbox("Process", names, index=names.index(d["process"]), format_func=lambda n: PROCESSES[n]["label"], key=f"{prefix}_proc")
-        if sel != d["process"]: set_process(sel); st.rerun()
-        pr = PROCESSES[sel]
-        c1.markdown(f"<div class='small' style='padding-top:1.7rem'>{pr['desc']}</div>", unsafe_allow_html=True)
-        a, b, c, e_ = st.columns(4)
-        d["feed"] = a.selectbox("Feedstock", list(FEEDSTOCKS), index=list(FEEDSTOCKS).index(d["feed"]), key=f"{prefix}_feed")
-        lo, hi = pr["T"]; d["htt"] = float(b.slider("Temperature (\u00b0C)", lo, hi, int(min(max(d["htt"], lo), hi)), 10 if hi - lo >= 100 else 5, key=f"{prefix}_htt_{sel}"))
-        if pr["dur_options"]:
-            cur = int(d["dur"]) if int(d["dur"]) in pr["dur_options"] else pr["dur_options"][2]
-            d["dur"] = float(c.select_slider("Residence time (min)", list(pr["dur_options"]), value=cur, key=f"{prefix}_dur_{sel}"))
-        else: d["dur"] = float(c.number_input("Residence time (min)", 0.02, 600.0, float(d["dur"]), 0.5 if d["dur"] >= 1 else 0.05, key=f"{prefix}_durn_{sel}"))
-        if sel == "slow_pyrolysis":
-            d["hr"] = float(e_.slider("Heating rate (\u00b0C/min)", 5, 30, int(d["hr"]), key=f"{prefix}_hr"))
-            d["liquid_share"] = st.slider("Liquid share of non-char products (assumption, not predicted)", 0.0, 1.0, float(d["liquid_share"]), 0.05, key=f"{prefix}_ls")
-        else: e_.caption("Product split from published typical values; heating rate not a model input for this process.")
-    return d
-
 def plant_inputs(p, prefix="pl"):
     a, b, c = st.columns(3)
     p.wet_feed_t_y = a.number_input("Wet feedstock (t/y)", min_value=1.0, value=float(p.wet_feed_t_y), step=500.0, key=prefix + "_wet")
@@ -262,6 +347,20 @@ def sankey(t):
     fig = go.Figure(go.Sankey(node=dict(label=labels, pad=18, thickness=14, color=["#33434d", "#6aa7d6", GREEN, "#2b2b2b", AMBER, GREY, "#c8c8c8"]),
                     link=dict(source=[src[i] for i in keep], target=[dst[i] for i in keep], value=[val[i] for i in keep], color="rgba(127,140,150,.28)")))
     return style_fig(fig, 300, legend=False)
+
+def show_html(html, height):
+    if hasattr(st, "iframe"): st.iframe(html, height=height)
+    else: components.html(html, height=height)
+
+def energy_sankey(e):
+    names = []
+    for a, b, v in e["links"]:
+        for n in (a, b):
+            if n not in names: names.append(n)
+    col = {"Syngas energy": "#b0a8d8", "Bio-oil energy (diverted)": AMBER, "Recovered heat": "#ff7a66", "External heat": BLUE, "Surplus heat": GREEN, "Unrecovered": GREY, "Process requirement": "#33434d"}
+    fig = go.Figure(go.Sankey(node=dict(label=names, pad=16, thickness=14, color=[col.get(n, "#7a8b99") for n in names]),
+                    link=dict(source=[names.index(a) for a, b, v in e["links"]], target=[names.index(b) for a, b, v in e["links"]], value=[v for a, b, v in e["links"]], color="rgba(127,140,150,.28)")))
+    return style_fig(fig, 340, legend=False)
 
 # ------------------------------------------------------------------ calculation logs
 def _fv(v):
@@ -432,9 +531,42 @@ def tech_kpis(R):
           ("Economic surplus", fmt(ec["annual_economic_surplus_usd_y"]), "after capital recovery", "USD/y"), ("NPV", fmt(ec["npv_usd"]), "placeholder prices", "USD"),
           ("Breakeven carbon price", fmt(be) if be is not None else "n/a", "surplus = 0", "USD/t"), ("Stable carbon", f"{p.stable_carbon_fraction:.2f}", "fraction of char C")])
 
-# ================================================================== EXECUTIVE DASHBOARD
-if page == "Executive dashboard":
-    header("Executive dashboard", "Research-derived engineering and commercial intelligence: feedstocks, operating conditions, product quality, plant design evidence and economics.")
+# ================================================================== OVERVIEW
+if page == "Overview":
+    st.markdown("""<div class="hero"><div class="eyebrow">MENA \u00b7 carbon removal engineering</div><h1>Biochar Engineering Platform</h1>
+<p>From feedstock to carbon-removal economics in five steps: read the evidence, predict what the biochar looks like, engineer the process, test the business case and search for the best design.</p>
+<div class="tagrow"><span class="tag">Literature-trained predictor</span><span class="tag">3D structure viewer</span><span class="tag">Mass &amp; energy balances</span><span class="tag">Techno-economics</span><span class="tag">Design optimiser</span></div></div>""", unsafe_allow_html=True)
+    section("Quick start \u00b7 choose a scenario")
+    cols = st.columns(len(PRESETS))
+    for c, (lab, des) in zip(cols, PRESETS.items()): c.button(lab, key=f"pre_{lab}", width="stretch", on_click=apply_design, args=(des,))
+    st.caption("Or build your own in the sidebar. Every step below uses this one scenario.")
+    section("Your scenario at a glance")
+    try:
+        p_, e_, pr_ = current_scenario(); t_ = calculate_technical(p_); ec_ = calculate_economics(t_, p_, e_)
+        kpis([("Char yield", f"{p_.char_yield_dry * 100:.1f}", "of dry feed", "wt%"), ("Stable carbon", f"{p_.stable_carbon_fraction:.2f}", "fraction of char C"), ("Biochar", fmt(t_["char_t_y"]), f"per {fmt(t_['wet_feed_t_y'])} t/y wet feed", "t/y"),
+              ("CO\u2082 credits", fmt(credit_calc(t_["gross_stored_co2_t_y"], 135, .15, .10, 8)["credits_t_y"]), "after 15% + 10% deductions", "t/y"), ("Credit revenue", fmt(credit_calc(t_["gross_stored_co2_t_y"], 135, .15, .10, 8)["revenue_usd_y"]), "at 135 USD/t (edit in Economics)", "USD/y"), ("Economic surplus", fmt(ec_["annual_economic_surplus_usd_y"]), "placeholder prices", "USD/y"), ("NPV", fmt(ec_["npv_usd"]), "placeholder prices", "USD")])
+        scenario_strip()
+    except Exception as ex:
+        st.info(f"Complete the manual product yields on the Process page to see a summary. ({ex})")
+    section("The workflow")
+    steps = [("Evidence", "What do published experiments say about yield, quality and operating windows? The data behind the predictor."),
+             ("Biochar", "Predict yield, carbon, ash and H/C for your scenario, then see the 3D carbon structure those properties imply."),
+             ("Process", "Mass and carbon balance, heat duty and particle conversion time on a plant basis."),
+             ("Economics", "Cash flow, cost drivers, unit costs and a sensitivity tornado."),
+             ("Optimize", "Search feedstock, temperature and residence time for the best feasible design, then apply it back.")]
+    cols = st.columns(5)
+    for i, (c, (sid, desc_)) in enumerate(zip(cols, steps), 1):
+        with c, st.container(border=True):
+            st.markdown(f'<div class="stepnum">{i}</div><p class="stepcard-t">{NAV[sid][0].split(" \u00b7 ")[1]}</p><p class="stepcard-d">{desc_}</p>', unsafe_allow_html=True)
+            st.button("Open", key=f"ov_{sid}", width="stretch", on_click=goto, args=(sid,))
+    section("Read this first")
+    st.info("This is a screening tool. Only slow pyrolysis is predicted from data. Prices, CAPEX, feed carbon, the liquid/gas split, particle properties and the carbon-permanence map are placeholders or typical values, labelled as such on every page. The 3D structure is a stylised visual driven by the predicted properties, not a molecular simulation.")
+    nav_footer("Overview")
+
+# ================================================================== EVIDENCE
+elif page == "Evidence":
+    stepper("Evidence")
+    header("Literature evidence", "What published experiments report about yield, quality and operating windows. This is the dataset that trains the predictors in step 2.")
     chars = pd.read_csv(Path(__file__).parent / "data" / "biochar_production_characteristics_202404.csv")
     bib = pd.read_csv(Path(__file__).parent / "data" / "biochar_production_bibliography_202404.csv")
     numeric = ["HTT", "Pyrolysis_duration", "Heating_rate", "Yield", "Fixed_C", "Ash", "C", "H_C", "O_C", "Volatile_matter"]
@@ -517,27 +649,61 @@ if page == "Executive dashboard":
         src = src.copy(); src["DOI link"] = src["DOI"].apply(lambda x: f"https://doi.org/{x}" if pd.notna(x) and str(x).strip() else "")
         st.dataframe(src.drop(columns=["DOI"]), width="stretch", hide_index=True, column_config={"DOI link":st.column_config.LinkColumn("Open source DOI")})
         st.caption("The structured records are drawn from the bundled biochar production dataset (April 2024). Values remain attached to their publication and experimental conditions. Missing fields are not imputed for this dashboard.")
+    nav_footer("Evidence")
 
-# ================================================================== ROUGH ESTIMATES
-elif page == "Rough estimates":
-    header("Rough estimates", "Fast screening from the trained prediction models: choose a process, feedstock and conditions.")
-    pred = get_predictor(); d = scenario_controls("est")
+# ================================================================== BIOCHAR
+elif page == "Biochar":
+    stepper("Biochar")
+    header("Biochar: what does this scenario produce?", "Predicted yield and quality from the literature-trained model, and the carbon structure those properties imply.")
+    scenario_strip()
+    pred = get_predictor(); d = S.design
     feed, process, htt, dur, hr = d["feed"], d["process"], d["htt"], d["dur"], d["hr"]; cls = FEEDSTOCKS[feed]["cls"]
     p0, e0, r = design_inputs(pred, feed, htt, dur, hr, replace(S.process, wet_feed_t_y=10000.0), S.economics, d["liquid_share"], process=process)
     t0 = calculate_technical(p0); ec0 = calculate_economics(t0, p0, e0); sf = p0.stable_carbon_fraction
     if process != "slow_pyrolysis": st.warning(f"{PROCESSES[process]['label']}: {PROCESSES[process]['status']}")
     elif r["extrapolating"]: st.warning("Outside the observed temperature range for this feedstock class: treat as extrapolation.")
-    tabs = st.tabs(["Estimate", "Trends", "Model validation", "Mathematical model", "Calculation log"])
+    sd = lambda k: f"\u00b1{r[k]['std']:.2g} (tree spread)" if r[k]["std"] else PROCESSES[process]["yield_source"]
+    hc_used = r["H_C_used"]; ash_val = r["Ash"]["mean"]
+    if ash_val != ash_val: ash_val = pred.class_means["Ash"].get(cls, 8.0)
+    kpis([("Char / solid yield", f"{r['Yield']['mean']:.1f}", sd("Yield"), "wt% dry"), ("Carbon in char", f"{r['C']['mean']:.1f}", sd("C"), "wt%"), ("Ash", f"{ash_val:.1f}", "predicted" if r["Ash"]["mean"] == r["Ash"]["mean"] else "class mean", "wt%"),
+          ("H/C molar", f"{hc_used:.2f}", sd("H_C")), ("Stable-C fraction", f"{sf:.2f}", "placeholder H/C map")])
+    chips([(f"H/C {hc_used:.2f}: {'high' if hc_used < 0.4 else 'medium' if hc_used < 0.7 else 'low'} stability class" + ("" if hc_used < 0.7 else " (above the 0.7 limit)"), "ok" if hc_used < 0.4 else "warn" if hc_used < 0.7 else "bad")])
+    tabs = st.tabs(["3D structure", "Property trends", "Model validation", "Scale-up preview", "Audit"])
     with tabs[0]:
-        sd = lambda k: f"\u00b1{r[k]['std']:.2g} (tree spread)" if r[k]["std"] else PROCESSES[process]["yield_source"]
-        section("Predicted product")
-        kpis([("Char / solid yield", f"{r['Yield']['mean']:.1f}", sd("Yield"), "wt% dry"), ("Carbon in char", f"{r['C']['mean']:.1f}", sd("C"), "wt%"), ("H/C molar", f"{r['H_C']['mean']:.2f}", sd("H_C")),
-              ("Stable-C fraction", f"{sf:.2f}", "placeholder H/C map")])
-        st.caption("H/C below 0.7 is the usual biochar quality limit. Tree spread is not a calibrated interval.")
-        section("Rough result per 10,000 t/y wet feed")
-        kpis([("Biochar / solid", fmt(t0["char_t_y"]), "", "t/y"), ("Removal proxy", fmt(t0["net_removal_proxy_tco2e_y"]), "screening", "tCO\u2082e/y"),
-              ("Carbon retained", f"{t0['carbon_retained_fraction']:.0%}", "feasible" if t0["carbon_balance_ok"] else "INFEASIBLE: more C in char than in feed"), ("Economic surplus", fmt(ec0["annual_economic_surplus_usd_y"]), "placeholder prices", "USD/y")])
-        if st.button("Use these conditions as the active scenario", type="primary"): S.yield_source = "Predicted (data-driven)"; st.toast("Scenario set: see Technical, Economic, Optimize.")
+        desc, nano, micro = structure_cached(int(round(htt)), round(float(hc_used), 2), round(float(ash_val), 1), cls)
+        ns = nano["stats"]
+        caps = {"lattice": f"Box {ns['box_nm']:.1f} nm \u00b7 {ns['n_atoms']:,} atoms \u00b7 {ns['n_crystallites']} aromatic stacks", "particle": f"Stylised particle section \u00b7 {micro['stats']['n_channels']} channels \u00b7 {micro['stats']['n_ash_grains']} ash grains"}
+        c1, c2 = st.columns([5, 3], gap="large")
+        with c1:
+            viz3d.viewer(nano, micro, caps, height=560, mode="lattice", key="viewer_main")
+            st.markdown('<div class="viewer-note">Drag to rotate, scroll to zoom. Switch between the <b>atomic lattice</b> (nanometres) and the <b>particle and pore network</b> (stylised, not to scale) with the buttons in the viewer.</div>', unsafe_allow_html=True)
+        with c2:
+            section("What the model draws, and why")
+            lum = "Honeycomb channels (lumen/pitch " + f"{desc['lumen_ratio']:.2f})" if desc["n_channels_axis"] else "Foam-like pores, no channel network"
+            rows = [("Aromatic clusters", f"{desc['n_rings']} fused rings, about {desc['La_nm']:.1f} nm", "Closest compact PAH to the predicted H/C (H/C = 1/k series)"),
+                    ("Stacking", f"{desc['n_layers']} layer(s), d002 about {desc['d002_nm']:.2f} nm", "Typical trend with temperature (placeholder)"),
+                    ("Aromatic carbon", f"{desc['arom_frac']:.0%}; rest as aliphatic chains", "Linear trend in H/C (placeholder)"),
+                    ("Oxygen groups", f"O/C about {desc['oc']:.2f}", "Dataset median at this H/C (not predicted)"),
+                    ("Mineral (ash) grains", f"{desc['ash_pct']:.1f} wt%", "Predicted ash (ML-001) or class mean"),
+                    ("Pore network", lum, "Stylised, depends on feedstock class"),
+                    ("Visual porosity", f"{desc['porosity_visual']:.0%}", "Stylised trend, not a BET measurement")]
+            st.dataframe(pd.DataFrame(rows, columns=["Feature", "Value", "Basis"]), width="stretch", hide_index=True, height=300)
+            st.caption("This is the layer-1 link: predicted properties in, structural descriptors out. The descriptor table is what a layer-2 model could consume.")
+            with st.expander("How is this built, and what is it not?"):
+                st.markdown("- Cluster size comes from H/C: a compact polycyclic aromatic with k rings along its edge has H/C = 1/k (benzene 1.0, coronene 0.5, circumcoronene 0.33).\n- Layers are stacked at the d002 spacing with random rotation (turbostratic), and bent more at low temperature.\n- Edge sites carry H, O groups or aliphatic chains in proportion to H/C, O/C and the aromatic share.\n- The particle view meshes a channel and pore field built from feedstock class, temperature and ash.\n- **Not** a molecular dynamics, DFT or tomography result. Use it to communicate trends, not to read off surface area or pore volume.")
+        section("How temperature reshapes the structure")
+        if st.toggle("Compare 400, 600 and 800 \u00b0C side by side", key="cmp_on"):
+            if process != "slow_pyrolysis": st.caption("Comparison uses the slow-pyrolysis predictor; select slow pyrolysis for a like-for-like view.")
+            vm = st.radio("View", ["Atomic lattice", "Particle & pores"], horizontal=True, key="cmp_view")
+            cols = st.columns(3)
+            for col, T in zip(cols, (400, 600, 800)):
+                rr = pred.predict(cls, float(T), dur, hr); aa = rr["Ash"]["mean"]
+                dd, nn, mm = structure_cached(T, round(float(max(rr["H_C"]["mean"], 0.05)), 2), round(float(aa), 1), cls)
+                with col:
+                    st.markdown(f"**{T} \u00b0C** \u00b7 H/C {rr['H_C']['mean']:.2f} \u00b7 {dd['n_layers']} layer(s)")
+                    viz3d.viewer(nn, mm, {"lattice": f"{nn['stats']['n_atoms']:,} atoms", "particle": f"{mm['stats']['n_channels']} channels"}, height=320, mode="lattice" if vm.startswith("Atomic") else "particle", compact=True, key=f"cmp_{T}")
+        else:
+            st.caption("Turn this on to see low, medium and high temperature structures next to each other.")
     with tabs[1]:
         if process != "slow_pyrolysis": st.info("Trend curves come from the slow-pyrolysis predictor. Select slow pyrolysis to see them.")
         else:
@@ -556,34 +722,52 @@ elif page == "Rough estimates":
         st.dataframe(cv, width="stretch", hide_index=True)
         st.caption("Cross-validation holds out whole publications. Yield and H/C beat the baseline clearly; carbon and ash are about at baseline. Fixed carbon and O/C were tested and dropped (no skill). The dataset contains 1,350 slow, 13 fast and 7 gasification rows, so only slow pyrolysis is modelled from data.")
         source_note(["ML-001", "PERM-001"])
-    with tabs[3]: render_math("estimates")
-    with tabs[4]: log_view(log_estimates(feed, cls, htt, dur, hr, r, sf, t0, ec0, process), "estimates_log")
+    with tabs[3]:
+        st.caption("A quick look at what this chemistry means at plant scale. Detailed balances are in step 3, the business case in step 4.")
+        section("Rough result per 10,000 t/y wet feed")
+        kpis([("Biochar / solid", fmt(t0["char_t_y"]), "", "t/y"), ("Removal proxy", fmt(t0["net_removal_proxy_tco2e_y"]), "screening", "tCO\u2082e/y"),
+              ("Carbon retained", f"{t0['carbon_retained_fraction']:.0%}", "feasible" if t0["carbon_balance_ok"] else "INFEASIBLE: more C in char than in feed"), ("Economic surplus", fmt(ec0["annual_economic_surplus_usd_y"]), "placeholder prices", "USD/y")])
+    with tabs[4]:
+        sub = st.tabs(["Mathematical model", "Calculation log"])
+        with sub[0]: render_math("estimates")
+        with sub[1]: log_view(log_estimates(feed, cls, htt, dur, hr, r, sf, t0, ec0, process), "estimates_log")
     snap = {"process": PROCESSES[process]["label"], "process_status": PROCESSES[process]["status"], "feedstock": feed, "HTT_C": htt, "residence_min": dur, "prediction": r, "stable_fraction": sf,
             "cv": {k_: {"r2": v["r2"], "baseline_r2": v["baseline_r2"]} for k_, v in pred.cv.items()},
             "per_10kt_wet": {"char_t_y": t0["char_t_y"], "removal_proxy": t0["net_removal_proxy_tco2e_y"], "carbon_retained": t0["carbon_retained_fraction"]},
-            "assumption_status": "Stable fraction map, feed carbon, HTC lines are placeholders/typical values."}
+            "structure_model": {k_: desc[k_] for k_ in ("n_rings", "n_layers", "d002_nm", "arom_frac", "oc", "porosity_visual")},
+            "assumption_status": "Stable fraction map, feed carbon, HTC lines are placeholders/typical values. The 3D structure is a stylised visual, not a simulation."}
     ai_panel("Rough estimates", _r(snap), fallback=[f"Predicted char yield {r['Yield']['mean']:.1f}% and H/C {r['H_C']['mean']:.2f}."])
+    nav_footer("Biochar")
 
-# ================================================================== TECHNICAL
-elif page == "Technical":
-    header("Technical", "Understand the process step by step: material flows, energy demand, particle conversion and the calculations behind every result.")
-    S.yield_source = st.radio("Product yields come from", ["Predicted (data-driven)", "Manual inputs"], horizontal=True, index=0 if PRED() else 1)
-    if PRED(): scenario_controls("tech")
-    else:
+# ================================================================== PROCESS
+elif page == "Process":
+    stepper("Process")
+    header("Process engineering", "Where the material and heat go, and whether the particles convert within the residence time.")
+    scenario_strip()
+    if not PRED():
         with st.container(border=True):
-            names = list(PROCESSES); sel = st.selectbox("Process", names, index=names.index(S.design["process"]), format_func=lambda n: PROCESSES[n]["label"], key="tech_proc_m")
-            if sel != S.design["process"]: set_process(sel); st.rerun()
+            st.markdown("**Manual product yields.** Switch back to predicted yields under Advanced in the sidebar.")
             S.design["dur"] = float(st.number_input("Residence time (min)", 0.02, 600.0, float(S.design["dur"]), 1.0, key="t_dur_m"))
             S.process = process_inputs("man")
-    with st.expander("Edit process, plant and particle inputs", expanded=False):
+    with st.expander("Plant and particle inputs (advanced)", expanded=False):
         if PRED(): S.process = plant_inputs(S.process)
         st.markdown("**Particle model**"); particle_inputs()
     R = pipeline(); t, p, sim, pp, pr = R["t"], R["p"], R["sim"], R["pp"], R["pr"]
     chips(status_checks(R))
     if pr and S.design["process"] == "slow_pyrolysis": st.caption(f"Predicted: yield {pr['Yield']['mean']:.1f}% \u00b1{pr['Yield']['std']:.1f}, carbon {pr['C']['mean']:.0f}%, H/C {pr['H_C']['mean']:.2f}.")
-    st.markdown("**How to use this analysis**  \n1. Check how much feed becomes each product.  2. Inspect the heat required to run the process.  3. Check whether particles heat and convert within the available residence time.  4. Open the audit tabs to inspect equations, assumptions and verification.")
-    tabs = st.tabs(["1 · Material balance", "2 · Heat & energy", "3 · Particle behaviour", "4 · Calculation log", "5 · Assumptions & models", "6 · Equations", "7 · Verification"])
+    st.caption("Work through the tabs left to right: material balance, heat demand, particle behaviour. The audit tab holds the equations, assumptions and verification.")
+    tabs = st.tabs(["Flow diagram", "Material balance", "Heat & energy", "Particle behaviour", "Audit & verification"])
     with tabs[0]:
+        st.caption("Streams animate and resize with your inputs. Mass is in t/y; the red loop is recovered co-product heat. Below: the same balances as Sankey diagrams.")
+        show_html(pfd_html(t, p, R["proc"]["label"]), 520)
+        ef = energy_flows(t, p)
+        kpis([("Heat self-sufficiency", f"{ef['self_sufficiency']:.0%}", "recovered / required"), ("Heat required", fmt(ef["requirement"]), "fuel basis", "GJ/y"), ("Recovered from co-products", fmt(ef["recovered"]), "syngas + diverted oil", "GJ/y"),
+              ("External heat needed" if ef["external"] > 0 else "Surplus heat", fmt(ef["external"] if ef["external"] > 0 else ef["surplus"]), "", "GJ/y")])
+        c1, c2 = st.columns(2)
+        with c1, st.container(border=True): st.markdown("**Mass balance (t/y)**"); st.plotly_chart(sankey(t), width="stretch", key="sk_mass_pfd")
+        with c2, st.container(border=True): st.markdown("**Process-heat balance (GJ/y)**"); st.plotly_chart(energy_sankey(ef), width="stretch")
+        st.caption("Heat required is on a fuel basis (duty / losses / burner efficiency). Recovered heat applies the co-product recovery fraction to gas and diverted-oil energy. These are the engine's own definitions, so the comparison is conservative: the burner efficiency and recovery fraction are both applied.")
+    with tabs[1]:
         st.caption("Start with the overall dry-feed balance. The Sankey shows where the dry biomass goes; the table gives the exact annual mass flow.")
         c1, c2 = st.columns([3, 2])
         with c1, st.container(border=True): st.plotly_chart(sankey(t), width="stretch")
@@ -595,7 +779,7 @@ elif page == "Technical":
         kpis([("Carbon in dry feed", fmt(t["feed_carbon_t_y"]), "typical feed C fraction", "t/y"), ("Carbon in char", fmt(t["char_carbon_t_y"]), "", "t/y"),
               ("Retained in char", f"{t['carbon_retained_fraction']:.0%}", "must be \u2264 100%"), ("Stable carbon \u2192 CO\u2082", fmt(t["gross_stored_co2_t_y"]), "gross", "t/y")])
         if not t["carbon_balance_ok"]: st.error("Infeasible: char holds more carbon than the feed supplies. Check the yield/carbon inputs or the feed carbon fraction.")
-    with tabs[1]:
+    with tabs[2]:
         st.caption("Heat demand is built from separate physical contributions. Compare the bars to identify the dominant duty, then inspect the table for the net process requirement.")
         st.caption(f"Water properties: {t['water_property_source']}. Reaction heat: {p.pyrolysis_enthalpy_kJ_kg_dry:.0f} kJ/kg (user assumption)." + (" HTC: no vaporisation; heat recovery applied." if p.process_type == "htc" else ""))
         terms = pd.DataFrame([["Water sensible", t["water_sensible_GJ_y"]], ["Vaporisation", t["water_vaporisation_GJ_y"]], ["Steam superheat", t["steam_superheat_GJ_y"]], ["Dry solids", t["solids_sensible_GJ_y"]],
@@ -606,7 +790,7 @@ elif page == "Technical":
             st.dataframe(pd.DataFrame([["Useful process heat", t["useful_process_heat_GJ_y"]], ["Purchased heat requirement", t["purchased_heat_requirement_GJ_y"]], ["Co-product chemical energy", t["coproduct_chemical_energy_GJ_y"]],
                                        ["Recoverable co-product heat", t["recoverable_coproduct_heat_GJ_y"]], ["Heat deficit", t["heat_deficit_GJ_y"]], ["Heat surplus", t["heat_surplus_GJ_y"]]], columns=["Quantity", "GJ/y"]).round(1), width="stretch", hide_index=True)
         st.caption("Screening balance: sensible heat, phase change, constant solids cp. No reactor heat-transfer area, oxidant demand or gas-phase reactions.")
-    with tabs[2]:
+    with tabs[3]:
         st.caption("The particle model answers two practical questions: how quickly heat reaches the particle centre, and how quickly the model predicts devolatilisation. Compare both with the selected residence time.")
         if sim is None: st.info("The particle model does not apply to hydrothermal carbonisation.")
         else:
@@ -627,12 +811,13 @@ elif page == "Technical":
             st.info("Reduced-order particle model (1-D spherical conduction + one-step kinetics), verified against the analytical conduction solution. It does not include gas flow, pressure, shrinkage or bed effects; in a packed or rotating bed heat-up is slower than for a single particle in hot gas, so treat conversion time as a lower bound.")
             if sim.get("kinetics_extrapolated"):
                 st.warning("Kinetic extrapolation: the cited beech-wood Arrhenius parameters were fitted over 573–708 K (about 300–435 °C). The selected particle gas temperature is outside that range; the predicted conversion time is an extrapolation, not a validated residence-time design value.")
-    with tabs[3]: log_view(log_technical(R), "technical_log")
-    with tabs[4]:
+    with tabs[4]: sub = st.tabs(["Calculation log", "Assumptions & models", "Equations", "Verification"])
+    with sub[0]: log_view(log_technical(R), "technical_log")
+    with sub[1]:
         st.dataframe(assumptions_table(R), width="stretch", hide_index=True)
         section("Models used"); source_note(["MASS-001", "ENERGY-001", "PYRO-001", "ML-001", "PERM-001", "PART-001", "KIN-001"])
-    with tabs[5]: render_math("technical")
-    with tabs[6]:
+    with sub[2]: render_math("technical")
+    with sub[3]:
         ver = verification_cached(); st.markdown("**Particle solver vs analytical sphere solution** (constant properties, fixed surface temperature, no reaction)")
         st.dataframe(pd.DataFrame(ver["rows"]).round(3), width="stretch", hide_index=True)
         from engine.thermo import water_enthalpies, liquid_water_heating_kJ_kg
@@ -647,62 +832,93 @@ elif page == "Technical":
     technical_ai_snapshot = snapshot(R, ["prediction", "technical"])
     technical_ai_snapshot["calculation_log"] = log_technical(R).to_dict(orient="records")
     ai_panel("Technical", technical_ai_snapshot, fallback=[f"Purchased heat {fmt(t['purchased_heat_requirement_GJ_y'])} GJ/y. The Technical tabs show equations, numerical inputs, calculation log and verification checks."])
+    nav_footer("Process")
 
-# ================================================================== ECONOMIC
-elif page == "Economic":
-    header("Economic", "See where the money goes, where revenue comes from, and which assumptions control project viability.")
+# ================================================================== ECONOMICS
+elif page == "Economics":
+    stepper("Economics")
+    header("Economics", "Where the money goes, where revenue comes from, and which assumptions control project viability.")
+    scenario_strip()
     with st.expander("Edit financial assumptions · placeholder values until verified", expanded=False): S.economics = econ_inputs("econ")
     R = pipeline(); t, ec, p, e = R["t"], R["ec"], R["p"], R["e"]
     st.markdown(f"**Technical basis:** {R['proc']['label']} \u00b7 {S.design['feed'] if PRED() else 'manual inputs'} \u00b7 {p.reactor_temp_C:.0f} \u00b0C \u00b7 {fmt(t['char_t_y'])} t/y solid \u00b7 removal proxy {fmt(t['net_removal_proxy_tco2e_y'])} tCO\u2082e/y")
     be = breakeven_carbon_price(ec, t)
     kpis([("Revenue", fmt(ec["total_revenue_usd_y"]), "", "USD/y"), ("Operating cost", fmt(ec["operating_cost_usd_y"]), "", "USD/y"), ("Economic surplus", fmt(ec["annual_economic_surplus_usd_y"]), "after capital recovery", "USD/y"),
           ("NPV", fmt(ec["npv_usd"]), "", "USD"), ("IRR", f"{ec['irr']:.1%}" if ec["irr"] is not None else "n/a", f"payback {fmt(ec['simple_payback_y'])} y" if ec["simple_payback_y"] else ""), ("Breakeven carbon price", fmt(be) if be is not None else "n/a", "surplus = 0", "USD/t")])
-    st.info("Follow the financial story from left to right: project cash flow → cost and revenue drivers → unit economics → sensitivity → calculation audit. Edit the assumptions above to test a scenario; replace placeholder values with quotations before treating results as investment estimates.")
-    tabs = st.tabs(["1 · Cash flow", "2 · Cost & revenue drivers", "3 · Unit economics", "4 · Sensitivity", "5 · Calculation log", "6 · Model equations"])
+    st.info("Read the tabs left to right: cash flow, cost and revenue drivers, unit economics, sensitivity, audit. Edit the assumptions above to test a scenario; replace placeholder values with quotations before treating results as investment estimates.")
+    tabs = st.tabs(["Carbon credits", "Cash flow", "Costs & revenue", "Unit economics", "Sensitivity", "Audit"])
     with tabs[0]:
+        st.caption("Tonnes of CO\u2082 stored per year and what they earn on the voluntary removal market. Deductions and fees are scenario assumptions, not registry rules.")
+        a, b, c, d_ = st.columns(4)
+        price = a.number_input("Credit price (USD/tCO\u2082)", 0.0, 1000.0, 135.0, 5.0, key="cc_price", help="Reference: about USD 136 CDR.fyi weighted average and EUR 135 Puro.earth biochar index (2026). Sellers report breakevens of roughly USD 143-187.")
+        life = d_.slider("Lifecycle emissions (% of gross)", 0, 50, 15, key="cc_life") / 100
+        buf = b.slider("Buffer / permanence deduction (%)", 0, 30, 10, key="cc_buf") / 100
+        fee = c.number_input("Registry + MRV cost (USD/credit)", 0.0, 100.0, 8.0, 1.0, key="cc_fee")
+        cc = credit_calc(t["gross_stored_co2_t_y"], price, life, buf, fee)
+        kpis([("CO\u2082 removed (credits)", fmt(cc["credits_t_y"]), "after deductions", "t/y"), ("Credit revenue", fmt(cc["revenue_usd_y"]), f"at {price:,.0f} USD/t", "USD/y"), ("Net of registry + MRV", fmt(cc["net_revenue_usd_y"]), "", "USD/y"),
+              ("Per tonne biochar", fmt(cc["revenue_usd_y"] / max(t["char_t_y"], 1e-9)), "credit revenue", "USD/t"), ("Equivalent to", fmt(cc["cars_equivalent"]), "cars off the road (4.6 t/y each)", "cars")])
+        c1, c2 = st.columns(2)
+        wf = go.Figure(go.Waterfall(x=["Gross stored CO\u2082", "Lifecycle emissions", "Buffer pool", "Credits issued"], measure=["absolute", "relative", "relative", "total"], y=[cc["gross_t_y"], -cc["lifecycle_t_y"], -cc["buffer_t_y"], 0],
+                                    increasing=dict(marker=dict(color=GREEN)), decreasing=dict(marker=dict(color=RED)), totals=dict(marker=dict(color=BLUE))))
+        wf.update_layout(title="From stored carbon to credits (t CO\u2082/y)")
+        with c1, st.container(border=True): st.plotly_chart(style_fig(wf, 340, legend=False), width="stretch")
+        base = ec["annual_economic_surplus_usd_y"] - ec["carbon_revenue_usd_y"]; prices = np.linspace(0, 400, 81)
+        sur = base + cc["credits_t_y"] * (prices - fee); be_p = (max(0.0, -base) / cc["credits_t_y"] + fee) if cc["credits_t_y"] > 0 else None
+        fg = go.Figure(go.Scatter(x=prices, y=sur, line=dict(color=GREEN, width=3), name="Annual surplus")); fg.add_hline(y=0, line_color=GREY)
+        if be_p is not None and be_p <= 400: fg.add_vline(x=be_p, line_dash="dot", annotation_text=f"break-even {be_p:,.0f}")
+        fg.add_vline(x=price, line_color=AMBER, annotation_text="your price"); fg.update_layout(xaxis_title="Credit price (USD/tCO\u2082)", yaxis_title="USD/y", title="Annual economic surplus vs credit price")
+        with c2, st.container(border=True): st.plotly_chart(style_fig(fg, 340, legend=False), width="stretch")
+        eff = effective_price_on_gross(price, life, buf, fee)
+        st.button(f"Use in the economic model ({eff:,.1f} USD per tonne of gross stored CO\u2082)", key="cc_apply", on_click=apply_cc_price, args=(eff,), help="The model multiplies this by its gross removal proxy, so deductions and fees are folded into one effective price.")
+        st.caption(f"Break-even credit price for this scenario: {be_p:,.0f} USD/tCO\u2082." if be_p is not None else "No credits are produced in this scenario.")
+        st.warning("Credits require a registry methodology, third-party verification and proof of persistence. The stable-carbon fraction here comes from a placeholder H/C map, so treat these numbers as an upper-bound screen, not an issuance forecast.")
+    with tabs[1]:
         st.caption("This is the project-level cash-flow picture: initial capital outlay followed by the modelled annual operating cash flow. It is undiscounted in this chart; NPV is shown above.")
         yrs = np.arange(0, int(e.project_life_y) + 1); cum = -e.capex_usd + ec["ebitda_like_usd_y"] * yrs
         fig = go.Figure(go.Scatter(x=yrs, y=cum, fill="tozeroy", line=dict(color=GREEN, width=3), fillcolor="rgba(31,122,90,.15)")); fig.add_hline(y=0, line_color=GREY)
         fig.update_layout(xaxis_title="Year", yaxis_title="USD", title="Cumulative cash flow (undiscounted)")
         with st.container(border=True): st.plotly_chart(style_fig(fig, 340, legend=False), width="stretch")
         st.caption("Constant annual EBITDA-like cash flow; no taxes, debt, working capital, escalation or replacement CAPEX.")
-    with tabs[1]:
+    with tabs[2]:
         st.caption("Positive bars are revenue; negative bars are costs. This view identifies the largest contributors to annual operating performance.")
         rows = [["Feedstock + logistics", -ec["feedstock_logistics_cost_usd_y"]], ["Electricity", -ec["electricity_cost_usd_y"]], ["Purchased heat", -ec["purchased_heat_cost_usd_y"]], ["Labour", -ec["labour_usd_y"]], ["Maintenance", -ec["maintenance_usd_y"]],
                 ["Other OPEX", -ec["other_opex_usd_y"]], ["Biochar sales", ec["char_revenue_usd_y"]], ["Liquid sales", ec["liquid_revenue_usd_y"]], ["Electricity export", ec["electricity_revenue_usd_y"]], ["Carbon credits", ec["carbon_revenue_usd_y"]]]
         df = pd.DataFrame(rows, columns=["Item", "USD/y"]); df["Type"] = np.where(df["USD/y"] >= 0, "Revenue", "Cost")
         with st.container(border=True): st.plotly_chart(style_fig(px.bar(df, x="Item", y="USD/y", color="Type", color_discrete_map={"Revenue": GREEN, "Cost": RED}), 340), width="stretch")
         if e.carbon_credit_usd_tco2e > 0: st.warning("Carbon revenue assumes the removal proxy is verified and creditable. It is a screening proxy today.")
-    with tabs[2]:
+    with tabs[3]:
         st.caption("Unit economics normalise the project totals by tonnes of product or tonnes of removal proxy. These are scenario-derived costs, not market quotations.")
         char = max(t["char_t_y"], 1e-9); rem = t["net_removal_proxy_tco2e_y"]; tc = ec["operating_cost_usd_y"] + ec["annualised_capex_usd_y"]; nan = float("nan")
         u = pd.DataFrame([["Full cost per tonne solid product", tc / char, "USD/t"], ["Cost per tCO2e removed (full cost)", tc / rem if rem > 0 else nan, "USD/tCO2e"],
                           ["Cost per tCO2e net of non-carbon revenue", max(0, tc - (ec["total_revenue_usd_y"] - ec["carbon_revenue_usd_y"])) / rem if rem > 0 else nan, "USD/tCO2e"], ["Breakeven carbon price", be if be is not None else nan, "USD/tCO2e"],
                           ["Assumed carbon price", e.carbon_credit_usd_tco2e, "USD/tCO2e"]], columns=["Metric", "Value", "Unit"])
         st.dataframe(u.round(2), width="stretch", hide_index=True); st.caption("Compare with the indicative biochar range on the dashboard (IPCC AR6, roughly 10-345 USD/tCO2; still to be re-verified).")
-    with tabs[3]:
+    with tabs[4]:
         st.caption("Change one input at a time and see how much annual economic surplus moves. This is a local sensitivity screen; it does not capture interactions between variables.")
         swing = st.slider("Swing on each input (\u00b1%)", 5, 50, 20, 5) / 100; base, rows = tornado(p, e, swing); fig = go.Figure()
         fig.add_trace(go.Bar(y=[r["input"] for r in rows], x=[r["low"] for r in rows], orientation="h", name=f"-{swing:.0%}", marker_color=RED)); fig.add_trace(go.Bar(y=[r["input"] for r in rows], x=[r["high"] for r in rows], orientation="h", name=f"+{swing:.0%}", marker_color=GREEN))
         fig.update_layout(barmode="overlay", yaxis=dict(autorange="reversed"), xaxis_title="Change in annual economic surplus (USD/y)")
         with st.container(border=True): st.plotly_chart(style_fig(fig, 420), width="stretch")
         st.caption(f"Base surplus {base:,.0f} USD/y. One-at-a-time swings; interactions not shown.")
-    with tabs[4]:
+    with tabs[5]: sub = st.tabs(["Calculation log", "Model equations"])
+    with sub[0]:
         st.caption("Every row shows the equation, numerical inputs, calculated result, units and model/source identifier. Download the table to audit or reuse the scenario calculations.")
         log_view(log_economic(R), "economic_log")
         source_note(["ECON-001"])
-    with tabs[5]:
+    with sub[1]:
         st.caption("Definitions of the financial equations used by the screening model.")
         render_math("economic")
     ai_panel("Economic", snapshot(R, ["technical", "economics"]), fallback=[f"Economic surplus {fmt(ec['annual_economic_surplus_usd_y'])} USD/y; breakeven carbon price {fmt(be) if be is not None else 'n/a'}."])
+    nav_footer("Economics")
 
 # ================================================================== OPTIMIZE
-else:
+elif page == "Optimize":
+    stepper("Optimize")
     header("Design optimiser", "Compare feasible slow-pyrolysis designs using the same feedstock, plant basis and technical/economic models.")
     pred = get_predictor()
     st.info("Scope: this optimiser currently searches slow pyrolysis only. Fast pyrolysis, torrefaction, gasification and HTC use screening-level or cross-process assumptions and are not comparable enough for a defensible combined optimum.")
-    with st.container(border=True):
-        st.subheader("1 · Define the design problem")
+    with st.expander("Design problem, objective and constraints", expanded=not bool(S.get("opt"))):
+        st.subheader("A \u00b7 Design problem")
         st.caption("Fixed plant basis is inherited from the Technical and Economic pages. Choose which feedstocks and operating conditions the optimiser may vary.")
         feeds = st.multiselect("Feedstocks to compare", list(FEEDSTOCKS), default=[S.design.get("feed", "Rice straw")] if S.design.get("feed", "Rice straw") in FEEDSTOCKS else ["Rice straw"])
         a, b = st.columns(2)
@@ -711,7 +927,7 @@ else:
         a, b = st.columns(2)
         cc = a.number_input("Carbon-credit scenario price (USD/tCO₂e)", min_value=0.0, max_value=1000.0, value=float(S.economics.carbon_credit_usd_tco2e), step=5.0, help="Scenario assumption only; zero excludes carbon revenue.")
         ls = b.slider("Liquid fraction of non-char products", 0.0, 1.0, float(S.design["liquid_share"]), 0.05)
-        st.subheader("2 · Define the objective and feasibility rules")
+        st.subheader("B \u00b7 Objective and feasibility rules")
         a, b = st.columns(2)
         objective = a.selectbox("Primary objective", ["Maximize NPV", "Maximize annual economic surplus", "Maximize net removal proxy", "Minimize break-even carbon price"])
         max_hc = b.number_input("Maximum biochar H/C ratio", min_value=0.1, max_value=2.0, value=0.7, step=0.05)
@@ -764,14 +980,9 @@ else:
                 st.markdown("**Why this candidate was selected**")
                 st.write(f"It has the best value of **{o['objective']}** among {len(o['rows']):,} candidates that passed the enabled constraints. Its ranking is conditional on the selected feedstock presets, prices, carbon-credit scenario, particle assumptions and tested grid.")
                 st.write(f"Predicted char yield is {best['pred_yield_pct']:.1f}% and predicted H/C is {best['pred_H_C']:.2f}. The calculated heat deficit is {fmt(best['heat_deficit_GJ_y'])} GJ/y; estimated annual operating cost is {fmt(best['operating_cost_usd_y'])} USD/y.")
-                if st.button("Apply selected conditions to Technical and Economic", type="primary"):
-                    S.design = {"process": "slow_pyrolysis", "feed": best["feedstock"], "htt": float(best["HTT"]),
-                                "dur": float(best["duration_min"]), "hr": float(best["heating_rate"]), "liquid_share": o["ls"]}
-                    pr_ = PROCESSES["slow_pyrolysis"]
-                    S.particle["d"], S.particle["h"] = pr_["particle_defaults"]["d"], pr_["particle_defaults"]["h"]
-                    S.economics = replace(S.economics, carbon_credit_usd_tco2e=float(o["cc"]))
-                    S.yield_source = "Predicted (data-driven)"
-                    st.toast("Selected conditions applied to the active scenario.")
+                b1, b2, _ = st.columns([2, 2, 3])
+                b1.button("Apply this design to the scenario", type="primary", key="opt_apply", width="stretch", on_click=apply_best, args=(best, o["ls"], o["cc"]))
+                b2.button("Review in Process \u2192", key="opt_go", width="stretch", on_click=goto, args=("Process",))
             else:
                 st.warning("No candidate passed the enabled constraints. Review the H/C threshold, particle size and conversion-time assumptions, or expand the tested temperature/residence-time grid.")
         else:
@@ -832,3 +1043,4 @@ else:
     R = pipeline()
     ai_panel("Optimize", snapshot(R, ["prediction", "technical", "economics", "optimizer"]),
              fallback=["Interpret the selected candidate against the tested alternatives, identify the binding constraints, and explain which assumptions most affect its ranking."])
+    nav_footer("Optimize")

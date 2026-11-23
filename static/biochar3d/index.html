@@ -1,0 +1,185 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+  html,body{margin:0;padding:0;background:transparent;overflow:hidden;font-family:-apple-system,"Segoe UI",Inter,Roboto,sans-serif;color:#dbe7ee}
+  #wrap{position:relative;width:100%;border-radius:16px;overflow:hidden;background:radial-gradient(ellipse at 28% 18%,#1b3a49 0%,#0c1a24 58%,#070f16 100%);border:1px solid rgba(120,170,190,.22);box-sizing:border-box}
+  canvas{display:block;width:100%;height:100%;cursor:grab;touch-action:none}
+  canvas:active{cursor:grabbing}
+  .hud{position:absolute;left:12px;right:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;pointer-events:none}
+  .hud.top{top:12px}.hud.bot{bottom:12px;align-items:flex-end;justify-content:space-between}
+  .btn{pointer-events:auto;border:1px solid rgba(160,205,220,.28);background:rgba(10,24,33,.62);color:#cfe3ec;border-radius:999px;padding:6px 13px;font-size:12.5px;font-weight:600;cursor:pointer;backdrop-filter:blur(6px);user-select:none}
+  .btn:hover{border-color:rgba(90,220,180,.7)}
+  .btn.on{background:rgba(31,122,90,.85);border-color:rgba(90,230,185,.8);color:#fff}
+  .grow{flex:1}
+  .tag{font-size:12px;opacity:.78;background:rgba(10,24,33,.55);padding:5px 11px;border-radius:999px;border:1px solid rgba(160,205,220,.15);backdrop-filter:blur(6px)}
+  .legend{display:flex;gap:12px;flex-wrap:wrap;font-size:12px;background:rgba(10,24,33,.55);padding:7px 12px;border-radius:12px;border:1px solid rgba(160,205,220,.15);backdrop-filter:blur(6px)}
+  .legend i{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;vertical-align:-1px}
+  .cap{font-size:12px;opacity:.7;max-width:46%;text-align:right;line-height:1.35}
+  #cut{pointer-events:auto;width:110px;accent-color:#3fd0a8}
+  #msg{position:absolute;inset:0;display:none;align-items:center;justify-content:center;text-align:center;padding:24px;font-size:14px;opacity:.85}
+  .compact .btn,.compact .legend{display:none}
+</style></head>
+<body>
+<div id="wrap"><canvas id="c"></canvas>
+  <div class="hud top" id="hudtop">
+    <span class="btn on" id="bLat">Atomic lattice</span><span class="btn" id="bPar">Particle &amp; pores</span>
+    <span class="grow"></span>
+    <span class="btn on" id="bRot">Auto-rotate</span>
+    <span class="btn" id="bCut" style="display:none">Cross-section</span><input id="cut" type="range" min="-90" max="90" value="0" style="display:none">
+  </div>
+  <div class="hud bot"><div class="legend" id="legend"></div><div class="cap" id="cap"></div></div>
+  <div id="msg">WebGL is not available in this browser, so the 3D view cannot be drawn.</div>
+</div>
+<script src="three.min.js"></script>
+<script src="MarchingCubes.js"></script>
+<script>
+(function(){
+const $=id=>document.getElementById(id);
+function send(type,data){window.parent.postMessage(Object.assign({isStreamlitMessage:true,type:type},data||{}),"*");}
+const wrap=$("wrap"),canvas=$("c");
+let renderer=null;
+try{renderer=new THREE.WebGLRenderer({canvas:canvas,antialias:true,alpha:true});}catch(e){renderer=null;}
+if(!renderer){$("msg").style.display="flex";}
+const scene=new THREE.Scene();
+const camera=new THREE.PerspectiveCamera(38,1,0.05,200);
+const pivot=new THREE.Object3D();scene.add(pivot);
+scene.add(new THREE.HemisphereLight(0xdcefff,0x08141c,0.95));
+const key=new THREE.DirectionalLight(0xffffff,1.15);key.position.set(3,4,5);scene.add(key);
+const rim=new THREE.DirectionalLight(0x3fd0a8,0.75);rim.position.set(-4,-2,-3);scene.add(rim);
+if(renderer){renderer.localClippingEnabled=true;}
+const S={sig:null,mode:null,rot:true,cut:false,dist:8,nano:null,micro:null,args:null,clip:new THREE.Plane(new THREE.Vector3(0,0,-1),10)};
+let nanoGroup=null,microGroup=null;
+
+function b64(s){const bin=atob(s),n=bin.length,u=new Uint8Array(n);for(let i=0;i<n;i++)u[i]=bin.charCodeAt(i);return u.buffer;}
+function disposeGroup(g){if(!g)return;g.traverse(o=>{if(o.geometry)o.geometry.dispose();if(o.material){(Array.isArray(o.material)?o.material:[o.material]).forEach(m=>m.dispose());}});pivot.remove(g);}
+
+/* ---------------- atomic lattice ---------------- */
+function buildNano(d){
+  const g=new THREE.Group(),sc=0.1;
+  const pos=new Float32Array(b64(d.pos)),typ=new Uint8Array(b64(d.typ)),bnd=new Uint32Array(b64(d.bonds));
+  const radius=[0.40,0.42,0.22,0.42],col=[0x7d93a6,0xe0b04c,0xeef4f8,0xff5a4d];
+  const cnt=[0,0,0,0];for(let i=0;i<typ.length;i++)cnt[typ[i]]++;
+  const ims=[],idx=[0,0,0,0],m4=new THREE.Matrix4();
+  for(let t=0;t<4;t++){
+    const im=new THREE.InstancedMesh(new THREE.SphereGeometry(radius[t]*sc,t===2?8:10,t===2?6:7),new THREE.MeshStandardMaterial({color:col[t],roughness:0.34,metalness:0.12}),Math.max(cnt[t],1));
+    im.count=cnt[t];im.frustumCulled=false;ims.push(im);g.add(im);
+  }
+  for(let i=0;i<typ.length;i++){const t=typ[i];m4.makeTranslation(pos[3*i]*sc,pos[3*i+1]*sc,pos[3*i+2]*sc);ims[t].setMatrixAt(idx[t]++,m4);}
+  const nb=bnd.length/2,bm=new THREE.InstancedMesh(new THREE.CylinderGeometry(1,1,1,6,1),new THREE.MeshStandardMaterial({color:0x6f8190,roughness:0.55}),Math.max(nb,1));
+  bm.frustumCulled=false;bm.count=nb;
+  const a=new THREE.Vector3(),b=new THREE.Vector3(),dir=new THREE.Vector3(),q=new THREE.Quaternion(),up=new THREE.Vector3(0,1,0),sv=new THREE.Vector3(),pv=new THREE.Vector3();
+  for(let i=0;i<nb;i++){
+    const ia=bnd[2*i],ib=bnd[2*i+1];
+    a.set(pos[3*ia],pos[3*ia+1],pos[3*ia+2]);b.set(pos[3*ib],pos[3*ib+1],pos[3*ib+2]);
+    dir.subVectors(b,a);const len=dir.length();dir.normalize();q.setFromUnitVectors(up,dir);
+    pv.addVectors(a,b).multiplyScalar(0.5*sc);sv.set(0.10*sc,len*sc,0.10*sc);m4.compose(pv,q,sv);bm.setMatrixAt(i,m4);
+  }
+  g.add(bm);
+  const L=d.box*sc,box=new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(L,L,L)),new THREE.LineBasicMaterial({color:0x3f6579,transparent:true,opacity:0.55}));
+  g.add(box);g.userData.dist=L*2.1+1.5;
+  return g;
+}
+
+/* ---------------- particle & pore network ---------------- */
+function buildMicro(m){
+  const g=new THREE.Group(),N=56,h=N/2;
+  const frontMat=new THREE.MeshStandardMaterial({color:0x52606c,roughness:0.5,metalness:0.28,side:THREE.FrontSide,clippingPlanes:[S.clip]});
+  const backMat=new THREE.MeshBasicMaterial({color:0xd9a441,side:THREE.BackSide,clippingPlanes:[S.clip]});
+  const mc=new THREE.MarchingCubes(N,frontMat,false,false,1400000);
+  const F=mc.field;const co=i=>(i-h)/h;
+  // rounded block-shaped particle (positive inside)
+  for(let k=0;k<N;k++)for(let j=0;j<N;j++)for(let i=0;i<N;i++){
+    const x=co(i)/0.80,y=co(j)/0.80,z=co(k)/0.86;
+    const p=Math.pow(Math.pow(Math.abs(x),4)+Math.pow(Math.abs(y),4)+Math.pow(Math.abs(z),4),0.25);
+    F[i+j*N+k*N*N]=(1-p)*0.5;
+  }
+  const marg=0.22;
+  (m.channels||[]).forEach(c=>{
+    const cx=c[0],cy=c[1],r=c[2],lo=(v)=>Math.max(0,Math.floor((v)*h+h)),hi=(v)=>Math.min(N-1,Math.ceil((v)*h+h));
+    for(let j=lo(cy-r-marg);j<=hi(cy+r+marg);j++)for(let i=lo(cx-r-marg);i<=hi(cx+r+marg);i++){
+      const d=Math.hypot(co(i)-cx,co(j)-cy)-r;
+      for(let k=0;k<N;k++){const id=i+j*N+k*N*N;if(d<F[id])F[id]=d;}
+    }
+  });
+  (m.spheres||[]).forEach(s=>{
+    const r=s[3],lo=v=>Math.max(0,Math.floor(v*h+h)),hi=v=>Math.min(N-1,Math.ceil(v*h+h));
+    for(let k=lo(s[2]-r-marg);k<=hi(s[2]+r+marg);k++)for(let j=lo(s[1]-r-marg);j<=hi(s[1]+r+marg);j++)for(let i=lo(s[0]-r-marg);i<=hi(s[0]+r+marg);i++){
+      const d=Math.hypot(co(i)-s[0],co(j)-s[1],co(k)-s[2])-r,id=i+j*N+k*N*N;if(d<F[id])F[id]=d;
+    }
+  });
+  const rg=(m.rough||0.006)*0.35;
+  for(let k=0;k<N;k++)for(let j=0;j<N;j++)for(let i=0;i<N;i++){
+    const x=co(i),y=co(j),z=co(k);
+    F[i+j*N+k*N*N]+=rg*(Math.sin(37*x+1.3)*Math.sin(41*y+0.7)*Math.sin(43*z+2.1)*1.6+Math.sin(13*x+17*z)*Math.sin(19*y-11*z)*0.8);
+  }
+  for(let k=0;k<N;k++)for(let j=0;j<N;j++)for(let i=0;i<N;i++){if(i===0||j===0||k===0||i===N-1||j===N-1||k===N-1)F[i+j*N+k*N*N]=-0.05;}
+  mc.isolation=0;mc.update();
+  mc.scale.set(1.9,1.9,1.9);mc.frustumCulled=false;g.add(mc);
+  const back=new THREE.Mesh(mc.geometry,backMat);back.scale.copy(mc.scale);back.frustumCulled=false;g.add(back);
+  const ashMat=new THREE.MeshStandardMaterial({color:0xcfeee6,roughness:0.35,metalness:0.1,emissive:0x1e5a4c,emissiveIntensity:0.55,flatShading:true,clippingPlanes:[S.clip]});
+  (m.ash||[]).forEach(a=>{const s=new THREE.Mesh(new THREE.IcosahedronGeometry(a[3]*1.9,1),ashMat);s.position.set(a[0]*1.9,a[1]*1.9,a[2]*1.9);g.add(s);});
+  g.userData.dist=8.2;
+  return g;
+}
+
+/* ---------------- state / HUD ---------------- */
+function legendFor(mode){
+  const dot=(c,t)=>'<span><i style="background:'+c+'"></i>'+t+'</span>';
+  return mode==="lattice"?dot("#93a3b1","Aromatic C")+dot("#e0b04c","Aliphatic C")+dot("#f3f7fa","H")+dot("#ff5a4d","O"):dot("#52606c","Carbon matrix")+dot("#cfeee6","Mineral (ash) grains")+dot("#d9a441","Cut face");
+}
+function setMode(mode){
+  S.mode=mode;
+  if(nanoGroup)nanoGroup.visible=(mode==="lattice");if(microGroup)microGroup.visible=(mode==="particle");
+  const grp=mode==="lattice"?nanoGroup:microGroup;if(grp)S.dist=grp.userData.dist;
+  $("bLat").classList.toggle("on",mode==="lattice");$("bPar").classList.toggle("on",mode==="particle");
+  $("bCut").style.display=(mode==="particle"&&!S.compact)?"":"none";$("cut").style.display=(mode==="particle"&&S.cut&&!S.compact)?"":"none";
+  $("legend").innerHTML=legendFor(mode);
+  const c=S.args&&S.args.captions;$("cap").textContent=c?(mode==="lattice"?c.lattice:c.particle):"";
+}
+function applyCut(){S.clip.constant=S.cut?(+$("cut").value)/100*1.0:10;}
+$("bLat").onclick=()=>setMode("lattice");$("bPar").onclick=()=>setMode("particle");
+$("bRot").onclick=()=>{S.rot=!S.rot;$("bRot").classList.toggle("on",S.rot);};
+$("bCut").onclick=()=>{S.cut=!S.cut;$("bCut").classList.toggle("on",S.cut);$("cut").style.display=S.cut?"":"none";applyCut();};
+$("cut").oninput=applyCut;
+// z-plane keeps z < constant ... (normal 0,0,-1 => keeps z >= -constant); slider moves the cut through the particle
+
+function onArgs(a){
+  S.args=a;S.compact=!!a.compact;wrap.classList.toggle("compact",S.compact);
+  const H=a.height||560;wrap.style.height=H+"px";document.body.style.height=H+"px";send("streamlit:setFrameHeight",{height:H});
+  if(!renderer)return;
+  resize();
+  if(a.sig!==S.sig){
+    S.sig=a.sig;disposeGroup(nanoGroup);disposeGroup(microGroup);nanoGroup=microGroup=null;
+    if(a.nano){nanoGroup=buildNano(a.nano);pivot.add(nanoGroup);}
+    if(a.micro){microGroup=buildMicro(a.micro);pivot.add(microGroup);}
+    const m=S.compact?(a.mode||"lattice"):(S.mode||a.mode||"lattice");
+    setMode(m);
+  } else {setMode(S.compact?(a.mode||"lattice"):(S.mode||a.mode||"lattice"));}
+  S.rot=a.autorotate!==false&&(S.rotSet?S.rot:true);
+  if(!S.rotSet){$("bRot").classList.toggle("on",S.rot);}
+  $("hudtop").style.display=S.compact?"none":"flex";
+  if(S.compact){const c=a.captions;$("cap").textContent=c?(S.mode==="lattice"?c.lattice:c.particle):"";}
+}
+function resize(){const w=wrap.clientWidth,h=wrap.clientHeight;if(!renderer||!w||!h)return;renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,2));renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix();}
+window.addEventListener("resize",resize);if(window.ResizeObserver)new ResizeObserver(resize).observe(wrap);
+$("bRot").addEventListener("click",()=>{S.rotSet=true;});
+
+/* ---------------- interaction ---------------- */
+let drag=null;
+canvas.addEventListener("pointerdown",e=>{drag={x:e.clientX,y:e.clientY};canvas.setPointerCapture(e.pointerId);S.dragging=true;});
+canvas.addEventListener("pointermove",e=>{if(!drag)return;pivot.rotation.y+=(e.clientX-drag.x)*0.008;pivot.rotation.x=Math.max(-1.4,Math.min(1.4,pivot.rotation.x+(e.clientY-drag.y)*0.008));drag={x:e.clientX,y:e.clientY};});
+canvas.addEventListener("pointerup",()=>{drag=null;S.dragging=false;});
+canvas.addEventListener("wheel",e=>{e.preventDefault();S.dist=Math.max(2.5,Math.min(40,S.dist*(1+Math.sign(e.deltaY)*0.08)));},{passive:false});
+let dcur=null;
+function loop(){
+  requestAnimationFrame(loop);if(!renderer||document.hidden)return;
+  if(S.rot&&!S.dragging)pivot.rotation.y+=0.0035;
+  dcur=dcur===null?S.dist:dcur+(S.dist-dcur)*0.12;camera.position.set(0,0,dcur);camera.lookAt(0,0,0);
+  renderer.render(scene,camera);
+}
+window.addEventListener("message",ev=>{if(ev.data&&ev.data.type==="streamlit:render")onArgs(ev.data.args||{});});
+send("streamlit:componentReady",{apiVersion:1});
+loop();
+window.__S=S;window.__dbg={pivot:pivot,scene:scene,camera:camera};
+})();
+</script></body></html>

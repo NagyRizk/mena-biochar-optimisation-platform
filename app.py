@@ -192,6 +192,8 @@ def structure_cached(htt, hc, ash, cls):
 NAV = {"Overview": ("Overview", "Start here"),
        "Evidence": ("1 · Evidence", "What the literature reports"),
        "Case Studies": ("2 · Case studies", "Compare model outputs with published experiments"),
+       "Model Library": ("3 · Model library", "Equations, derivations, sources and numerical assumptions"),
+       "Market & Value": ("4 · Market & value", "MENA demand evidence, feedstock fit and project value"),
        "Biochar": ("3 · Biochar", "Properties and 3D structure"),
        "Process": ("4 · Process", "Mass, heat, particle behaviour"),
        "Economics": ("5 · Economics", "Cash flow and sensitivity"),
@@ -270,7 +272,7 @@ with st.sidebar:
     st.write("")
     st.radio("Navigation", NAV_IDS, key="nav", format_func=lambda i: NAV[i][0], captions=[NAV[i][1] for i in NAV_IDS], label_visibility="collapsed")
     page = S.nav
-    if page in ("Evidence", "Case Studies"):
+    if page in ("Evidence", "Case Studies", "Model Library", "Market & Value"):
         st.markdown('<div class="side-h">Scenario</div>', unsafe_allow_html=True)
         st.caption("The literature evidence is independent of your scenario. Your scenario controls appear again from step 2.")
     else:
@@ -533,7 +535,176 @@ def tech_kpis(R):
           ("Breakeven carbon price", fmt(be) if be is not None else "n/a", "surplus = 0", "USD/t"), ("Stable carbon", f"{p.stable_carbon_fraction:.2f}", "fraction of char C")])
 
 # ================================================================== OVERVIEW
-if page == "Overview":
+if page == "Model Library":
+    header("Model library", "A single reference hub for the equations, numerical methods, source citations and assumptions used throughout the platform.")
+    st.info("Use this page as the technical/economic audit trail. A citation for an equation does not automatically validate its parameter values or prove the model predicts a real reactor accurately.")
+    ref_dir = Path(__file__).parent / "references"
+    docs_dir = Path(__file__).parent / "docs"
+    tech_path = docs_dir / "TECHNICAL_MODEL_REFERENCE.md"
+    math_path = ref_dir / "mathematical_model_references.csv"
+    nums_path = ref_dir / "numerical_assumptions.csv"
+    tabs = st.tabs(["Technical equations", "Economic equations", "Equation-to-source map", "Numbers & assumptions", "MENA feedstock evidence", "How to interpret evidence"])
+    if tech_path.exists():
+        doc = tech_path.read_text(encoding="utf-8")
+    else:
+        doc = "Technical model reference file is missing from this package."
+    with tabs[0]:
+        st.subheader("Technical model")
+        st.caption("Mass balance · thermodynamics · process heat · particle heat transfer · pyrolysis kinetics · carbon accounting · prediction model.")
+        st.markdown(doc.split("## 8. Economics")[0])
+        st.caption("For each equation, check the source register below for governing-equation references, numerical method references, parameter provenance and validation status.")
+    with tabs[1]:
+        st.subheader("Economic model")
+        st.caption("Capital recovery · annualised CAPEX · OPEX · revenue · EBITDA-like surplus · NPV · IRR · payback.")
+        econ_start = doc.find("## 8. Economics")
+        opt_start = doc.find("## 9. Optimisation")
+        if econ_start >= 0:
+            st.markdown(doc[econ_start:opt_start if opt_start > econ_start else len(doc)])
+        else:
+            st.warning("The economics section could not be located in the technical reference.")
+        st.markdown("### Economic equations at a glance")
+        st.latex(r"CRF=\\frac{i(1+i)^n}{(1+i)^n-1}")
+        st.latex(r"CAPEX_{ann}=CAPEX\\,CRF\\,a")
+        st.latex(r"OPEX=\\sum_j C_j")
+        st.latex(r"EBITDA_{like}=Revenue-OPEX")
+        st.latex(r"NPV=-CAPEX+\\sum_{t=1}^{n}\\frac{CF_t}{(1+i)^t}")
+        st.warning("The platform's economics are a screening cash-flow model. Taxes, financing structure, working capital, escalation, ramp-up, replacement CAPEX and decommissioning are not fully modelled. Cost and price defaults are assumptions, not sourced market quotations.")
+    with tabs[2]:
+        st.subheader("Equation-to-source map")
+        if math_path.exists():
+            mdf = pd.read_csv(math_path).fillna("")
+            query = st.text_input("Filter model ID, equation or reference", key="model_map_filter")
+            if query:
+                mask = mdf.astype(str).apply(lambda col: col.str.contains(query, case=False, na=False)).any(axis=1)
+                mdf = mdf[mask]
+            st.dataframe(mdf, width="stretch", hide_index=True)
+            st.download_button("Download equation-to-source map", mdf.to_csv(index=False).encode("utf-8"), "mathematical_model_references.csv", "text/csv")
+        else:
+            st.error("mathematical_model_references.csv is missing.")
+    with tabs[3]:
+        st.subheader("Numerical values, defaults and provenance")
+        st.caption("This register distinguishes literature parameters from standard identities, software choices, scenario defaults and placeholders.")
+        if nums_path.exists():
+            ndf = pd.read_csv(nums_path).fillna("")
+            q = st.text_input("Search a parameter, value, source or qualification", key="num_map_filter")
+            if q:
+                mask = ndf.astype(str).apply(lambda col: col.str.contains(q, case=False, na=False)).any(axis=1)
+                ndf = ndf[mask]
+            st.dataframe(ndf, width="stretch", hide_index=True)
+            st.download_button("Download numerical assumptions register", ndf.to_csv(index=False).encode("utf-8"), "numerical_assumptions.csv", "text/csv")
+        else:
+            st.error("numerical_assumptions.csv is missing.")
+    with tabs[4]:
+        st.subheader("MENA feedstock cost and commercial evidence")
+        st.warning("These are published study values and techno-economic assumptions, not live supplier quotations. Do not treat collection cost, purchase price, and delivered cost as interchangeable.")
+        st.markdown("""
+**How to build a delivered feedstock price**
+
+`Delivered cost = purchase / producer payment + collection + baling / size reduction + loading + transport + storage / losses + any applicable handling or gate fees.`
+
+Use the evidence below as a benchmark library. The Saudi date-palm study reports a combined purchase-and-transport assumption; the Egypt BEFS figures are collection costs excluding transport. The UAE date-pit study is a valuable regional techno-economic case, but its abstract does not disclose a numeric pit acquisition price. The UAE solar date-palm study is useful for process economics, not a price quote.
+
+**Important feedstock distinctions:** date pits (industrial fruit-processing by-product), date-palm pruning / fronds, and mixed date-palm field waste are different materials with different supply chains, moisture, ash, bulk density, preprocessing and competing uses.
+""")
+        feed_path = ref_dir / "mena_feedstock_evidence.csv"
+        if feed_path.exists():
+            fdf = pd.read_csv(feed_path).fillna("")
+            qf = st.text_input("Filter by country, feedstock, metric or source", key="mena_feedstock_filter")
+            if qf:
+                mask = fdf.astype(str).apply(lambda col: col.str.contains(qf, case=False, na=False)).any(axis=1)
+                fdf = fdf[mask]
+            st.dataframe(fdf, width="stretch", hide_index=True, column_config={"Source URL": st.column_config.LinkColumn("Source URL")})
+            st.download_button("Download MENA feedstock evidence", fdf.to_csv(index=False).encode("utf-8"), "mena_feedstock_evidence.csv", "text/csv")
+        else:
+            st.error("MENA feedstock evidence register is missing.")
+        st.markdown("**Current optimiser defaults remain provisional.** They have not been replaced with these benchmarks because the cost bases, countries, years, moisture conditions and logistics boundaries do not match. Change them in the Economics inputs until a project-specific sourcing quote is available.")
+    with tabs[5]:
+        st.subheader("What a citation does—and does not—establish")
+        st.markdown("""
+- **Governing equation source:** supports the mathematical form or physical law.
+- **Numerical method source:** supports the discretisation, solver or algorithm.
+- **Parameter source:** supports a particular numerical coefficient or property.
+- **Calibration source:** reports data used to fit model parameters.
+- **Validation evidence:** independent measurements compared with model predictions.
+- **Implementation choice:** a software setting, not a physical constant.
+- **Placeholder / scenario assumption:** must be replaced with measurements, vendor guarantees, quotations or project-specific data before design or investment decisions.
+
+A model can have a well-established governing equation and still have weak predictions if its inputs, coefficients or boundary conditions are not measured. The particle conduction verification checks numerical implementation against an analytical solution; it is not experimental reactor validation. The carbon-removal output is a proxy, not verified carbon removal. The financial outputs are scenario calculations, not a bankable feasibility study.
+""")
+    nav_footer("Model Library")
+
+elif page == "Market & Value":
+    stepper("Market & Value")
+    header("MENA market opportunity & project value", "Evidence-led market screening: regional needs, application fit, feedstock pathways and the decisions this platform helps de-risk.")
+    st.warning("This page is an opportunity-screening map, not a verified sales forecast. Market need, technical fit and commercial demand are separate. Scores below are ordinal evidence-fit judgements, not market size, market share or revenue predictions.")
+    ref_dir = Path(__file__).parent / "references"
+    market_path = ref_dir / "mena_market_evidence.csv"
+    heat_path = ref_dir / "mena_feedstock_market_heatmap.csv"
+    mdf = pd.read_csv(market_path).fillna("") if market_path.exists() else pd.DataFrame()
+    hdf = pd.read_csv(heat_path).fillna("") if heat_path.exists() else pd.DataFrame()
+    tabs = st.tabs(["Market signals", "Feedstock × application heatmap", "Project added value", "Evidence register"])
+    with tabs[0]:
+        st.subheader("Where is the regional need?")
+        st.markdown("The strongest defensible signals are **agricultural land restoration**, **water/wastewater treatment**, and **agricultural-residue valorisation**. These are adjacent market needs; none should be represented as guaranteed demand for biochar.")
+        if not mdf.empty:
+            selected = mdf[mdf["Evidence topic"].isin(["Regional biochar market estimate","Regional biochar market forecast","Agricultural land degradation","Water scarcity and desalination","Wastewater reuse gap","Water-treatment membranes market","Global biochar end-use survey","Biochar market barriers","Egypt agricultural residues","MENA date pits resource"])]
+            st.dataframe(selected[["Evidence topic","Geography","Metric","Reported value","Unit","Year / basis","Source URL","Evidence type","Limitations / interpretation"]],width="stretch",hide_index=True,column_config={"Source URL":st.column_config.LinkColumn("Source")})
+            st.caption("Interpretation: the MEA biochar market estimate is a third-party commercial estimate; the desalination and membrane figures are adjacent water infrastructure, not biochar addressable market. FAO land degradation is a need indicator, not a biochar sales forecast.")
+        st.markdown("#### Market maturity by application")
+        maturity = pd.DataFrame([
+            ["Soil amendment / horticulture","Early commercial / product qualification","Strongest broad end-use signal in global producer survey; MENA has land-restoration need and local field evidence.","Application trials, soil compatibility, agronomic ROI, contaminant compliance, distribution and repeat purchase."],
+            ["Water / wastewater adsorbents","Pilot-to-niche product qualification","Direct Egypt and UAE experimental studies; regional water scarcity and reuse infrastructure create a need context.","Breakthrough curves, competitive comparison vs activated carbon, regeneration, leaching, spent-media disposal, certification and plant trials."],
+            ["Activated carbon / supercapacitors","Research / advanced-materials pathway","Strong global biomass-carbon research; regional commercial offtake is not established by sources reviewed.","Activation process, BET/pore distribution, conductivity, ash/impurities, electrode fabrication, electrochemical device tests and buyer qualification."],
+            ["Construction / cementitious materials","Emerging research / standards-dependent","Global biochar end-use reporting identifies building materials as an emerging niche; no robust MENA offtake volume found.","Standards, durability, fire/thermal behaviour, leaching, mechanical performance and lifecycle assessment."],
+            ["Carbon removal / credits","Methodology- and buyer-dependent","Biochar carbon markets exist globally, but project eligibility, permanence, lifecycle emissions, MRV and offtake are decisive.","Methodology-specific accounting, feedstock chain of custody, energy emissions, char testing, storage/end use, monitoring and verification."]
+        ],columns=["Application","Indicative maturity","Evidence signal","Commercial gate / next proof required"])
+        st.dataframe(maturity,width="stretch",hide_index=True)
+        st.caption("Sources: FAO Arab-region land degradation; ESCWA GCC desalination; World Bank wastewater reuse; IBI/USBI 2023 and 2025 market reports; Egyptian and UAE case studies. Full citations are in the Evidence register tab.")
+    with tabs[1]:
+        st.subheader("Feedstock-to-market evidence-fit heatmap")
+        st.caption("Scale: 0 = no evidence located in this scan; 1 = weak/indirect; 2 = promising; 3 = direct application evidence. This is a qualitative evidence map, not a commercial demand or product-quality score.")
+        if not hdf.empty:
+            pivot = hdf.pivot(index="Feedstock",columns="Market application",values="Evidence-fit score (0-3)")
+            fig = go.Figure(data=go.Heatmap(z=pivot.values,x=pivot.columns.tolist(),y=pivot.index.tolist(),zmin=0,zmax=3,colorscale=[[0,"#f2f2f2"],[0.33,"#f1d58a"],[0.66,"#83b9a4"],[1,"#1f7a5a"]],text=pivot.values,texttemplate="%{text}",hovertemplate="%{y}<br>%{x}<br>Evidence-fit: %{z}/3<extra></extra>"))
+            fig.update_layout(height=440,margin=dict(l=10,r=10,t=30,b=110),xaxis_tickangle=-25)
+            st.plotly_chart(fig,width="stretch")
+            hf = hdf.copy()
+            qh = st.text_input("Filter feedstock / application evidence",key="heat_evidence_filter")
+            if qh:
+                hf = hf[hf.astype(str).apply(lambda c:c.str.contains(qh,case=False,na=False)).any(axis=1)]
+            st.dataframe(hf,width="stretch",hide_index=True)
+            st.download_button("Download heatmap evidence data",hdf.to_csv(index=False).encode("utf-8"),"mena_feedstock_market_heatmap.csv","text/csv")
+        st.markdown("**Important:** date pits are not date-palm fronds; bagasse is not automatically free because it may already serve as process fuel; rice straw and cotton stalks require collection/handling and have competing uses. Each supply chain needs a country, season, moisture and delivered-cost model.")
+    with tabs[2]:
+        st.subheader("What value does the platform add?")
+        st.markdown("The platform's defensible value proposition is **decision quality before capital is committed**. It should not claim that a case-study company lost money because it lacked our platform unless the source explicitly establishes that causal link.")
+        value_rows = [
+            ["Feedstock qualification before procurement","Date pits, date-palm pruning, rice straw, bagasse, cotton stalks and other residues differ in moisture, ash, carbon, bulk density and competing uses.","Compare feedstock-specific yields/quality; expose unsupported presets; connect feedstock to cost basis, preprocessing and supply risk.","Avoid treating one feedstock's yield, char price or acquisition cost as transferable to another."],
+            ["Process-route screening before CAPEX","UAE date-palm process comparison modelled pyrolysis, gasification and fermentation; fermentation required expenditure under that study's assumptions while pyrolysis/gasification returned positive modeled values.","Run mass/energy/economic comparisons and expose utility duty and coproduct assumptions before selecting a route.","Counterfactual lesson only: route screening can flag a weak pathway early; the paper itself performed a comparison, so it is not evidence that the authors lacked screening or suffered a realized loss."],
+            ["Application matching and product specification","Egypt date-palm biochar was tested for groundwater iron and subsequent phosphate adsorption; UAE date-palm biochar was tested in sandy/arid soils.","Avoid selling generic 'biochar': screen soil, adsorbent, activated-carbon or carbon-removal pathways against the required properties and tests.","Adsorption capacity and soil response are study-specific; pilot trials and buyer specifications remain necessary."],
+            ["Sensitivity and commercial downside","Saudi date-palm pyrolysis TEA reports strong sensitivity to by-product selling prices and relies on assumed product prices; the authors recommend longer pilot operation for more reliable first-hand data.","Stress-test feedstock price, yield, char price, utilities, transport, CAPEX and uptime; show break-even and downside cases.","A modeled positive NPV/IRR is not bankable until offtake quotes, vendor quotes and pilot data replace assumptions."],
+            ["Traceable evidence and investor diligence","Regional biochar market report identifies insufficient physical demand as a continuing industry barrier.","Show source, geography, year, metric, evidence type and limitation beside every market claim and model input.","A transparent evidence gap is more credible than presenting speculative TAM or unsupported savings as fact."]
+        ]
+        st.dataframe(pd.DataFrame(value_rows,columns=["Platform value lever","Published evidence / case","What the platform enables","What must not be claimed"]),width="stretch",hide_index=True)
+        st.markdown("#### Case-study numbers worth reproducing")
+        st.markdown("""- **UAE route comparison (Martis et al., 2020):** the paper reports modeled per-tonne-feed values of about USD 768 for pyrolysis and USD 166 for gasification, while fermentation required about USD 763 expenditure under its modeled boundary. These are paper outputs, not audited plant cash flows. [Source](https://doi.org/10.3390/en13225877).
+- **MENA date-pit TEA (Al-Rumaihi et al., 2022):** slow pyrolysis at 250 °C reports 50 wt% char yield and 62% carbon; fast pyrolysis at 400 °C reports 24 wt% char yield and 77% carbon. The 500 t/day facility and ROI/payback are modelled, not operating-plant guarantees. [Source](https://doi.org/10.1016/B978-0-323-95879-0.50135-1).
+- **Saudi date-palm TEA (Al Yahya et al., 2021):** the study reports strong modeled economics but uses assumed product prices and contains a reporting inconsistency in its per-tonne value discussion; the platform should reproduce the table boundary before using its headline figures. [Source](https://doi.org/10.3390/en14196048).""")
+        st.info("A credible investor statement: 'The platform helps screen feedstock, process route, product pathway and economic sensitivity using traceable evidence before committing to pilot or plant CAPEX.' Avoid claiming proven savings or avoided losses until a retrospective case comparison quantifies them.")
+    with tabs[3]:
+        st.subheader("Source register")
+        if not mdf.empty:
+            qe = st.text_input("Search source, country, metric or limitation",key="market_source_filter")
+            edf = mdf.copy()
+            if qe:
+                edf = edf[edf.astype(str).apply(lambda c:c.str.contains(qe,case=False,na=False)).any(axis=1)]
+            st.dataframe(edf,width="stretch",hide_index=True,column_config={"Source URL":st.column_config.LinkColumn("Open source")})
+            st.download_button("Download MENA market evidence register",mdf.to_csv(index=False).encode("utf-8"),"mena_market_evidence.csv","text/csv")
+        else:
+            st.error("Market evidence register missing.")
+    nav_footer("Market & Value")
+
+elif page == "Overview":
     st.markdown("""<div class="hero"><div class="eyebrow">MENA \u00b7 carbon removal engineering</div><h1>Biochar Engineering Platform</h1>
 <p>From feedstock to carbon-removal economics in five steps: read the evidence, predict what the biochar looks like, engineer the process, test the business case and search for the best design.</p>
 <div class="tagrow"><span class="tag">Literature-trained predictor</span><span class="tag">3D structure viewer</span><span class="tag">Mass &amp; energy balances</span><span class="tag">Techno-economics</span><span class="tag">Design optimiser</span></div></div>""", unsafe_allow_html=True)
@@ -554,8 +725,9 @@ if page == "Overview":
              ("Biochar", "Predict yield, carbon, ash and H/C for your scenario, then see the 3D carbon structure those properties imply."),
              ("Process", "Mass and carbon balance, heat duty and particle conversion time on a plant basis."),
              ("Economics", "Cash flow, cost drivers, unit costs and a sensitivity tornado."),
-             ("Optimize", "Search feedstock, temperature and residence time for the best feasible design, then apply it back.")]
-    cols = st.columns(5)
+             ("Optimize", "Search feedstock, temperature and residence time for the best feasible design, then apply it back."),
+             ("Market & Value", "Map MENA market signals, feedstock-to-application fit and the platform's decision value.")]
+    cols = st.columns(6)
     for i, (c, (sid, desc_)) in enumerate(zip(cols, steps), 1):
         with c, st.container(border=True):
             st.markdown(f'<div class="stepnum">{i}</div><p class="stepcard-t">{NAV[sid][0].split(" \u00b7 ")[1]}</p><p class="stepcard-d">{desc_}</p>', unsafe_allow_html=True)

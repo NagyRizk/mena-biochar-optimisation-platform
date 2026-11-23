@@ -37,3 +37,13 @@ Run `pytest -q` from the project root.
 - `data/reference_bibliography_uploaded.csv` preserves the supplied bibliography metadata.
 
 A citation for an equation does not validate an empirical coefficient or the platform prediction. Review the citation-scope and limitations columns before using outputs for design, investment or carbon-credit claims.
+
+
+## MENA feedstock sourcing evidence
+
+The Model Library includes a searchable `MENA feedstock evidence` tab. The underlying register is `references/mena_feedstock_evidence.csv`. Published collection-cost estimates, combined procurement-and-transport assumptions, process-economic results and unreported prices are explicitly distinguished. Legacy feedstock costs in the optimiser remain provisional placeholders and are not represented as current market prices.
+
+
+### Market opportunity and project value (v4.2.5)
+
+The **Market & Value** page contains MENA/MEA market-need indicators, regional case studies, a feedstock-to-application evidence-fit heatmap, the platform value proposition, and downloadable source registers. The heatmap is a qualitative evidence map, not a sales forecast. See `docs/MENA_MARKET_OPPORTUNITY.md` and `references/mena_market_evidence.csv`.

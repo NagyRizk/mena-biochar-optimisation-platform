@@ -75,3 +75,26 @@
 - Corrected technical model reference version label to v4.2.2.
 - Explicitly separated governing-equation sources, parameter sources, software citations, experimental evidence, numerical verification and assumptions.
 - Clarified that torrefaction/gasification splits, HTC interpolation, particle properties, lifecycle emissions and several economic defaults remain placeholders rather than cited empirical constants.
+
+
+## v4.2.3 — Model Library and navigation
+
+- Added a dedicated **Model Library** navigation page, separate from scenario controls.
+- Split technical equations and economic equations into directly accessible sections.
+- Added searchable, downloadable equation-to-source and numerical-assumption registers.
+- Added guidance distinguishing governing-equation citations, parameter provenance, numerical-method references, calibration and validation evidence.
+- Updated technical reference release label.
+
+## v4.2.4 — MENA feedstock evidence
+
+- Added a searchable MENA feedstock evidence register covering Egypt collection-cost benchmarks and Saudi/UAE date-palm/date-pit techno-economic studies.
+- Added a dedicated Model Library tab explaining purchase, collection, baling, handling, transport and delivered-cost boundaries.
+- Explicitly labelled legacy optimiser feedstock cost presets as provisional placeholders, not market prices. They remain unchanged until comparable, project-specific procurement evidence is available.
+- Distinguished date pits from date-palm prunings and mixed date-palm waste.
+
+## 4.2.5 — MENA Market Opportunity & Project Value
+- Added dedicated Market & Value navigation page.
+- Added sourced MENA/MEA market-needs evidence register with limitations and URLs.
+- Added qualitative feedstock × application evidence-fit heatmap; explicitly not a demand forecast.
+- Added platform value proposition and carefully qualified case-study counterfactuals.
+- Added downloadable CSV registers for market evidence and heatmap evidence.

@@ -6,7 +6,7 @@ from .models import ProcessInputs, EconomicInputs, calculate_technical, calculat
 from .predict import BiocharPredictor, stable_fraction_from_hc
 from .processes import PROCESSES, htc_properties
 
-# Moisture / class mapping are screening presets. Costs are PLACEHOLDERS, not sourced quotations.
+# Moisture / class mapping are screening presets. Costs below are legacy scenario placeholders, NOT MENA market prices. See references/mena_feedstock_evidence.csv for published regional benchmarks; cost bases are not directly interchangeable.
 FEEDSTOCKS = {
     "Rice straw":            {"cls": "herbaceous", "moisture": 0.15, "cost": 5.0,  "logistics": 10.0, "c": 0.38},
     "Sugarcane bagasse":     {"cls": "herbaceous", "moisture": 0.50, "cost": 3.0,  "logistics": 6.0, "c": 0.47},

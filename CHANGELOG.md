@@ -1,3 +1,10 @@
+## 4.2.7 — Model Library display-math rendering fix
+
+- Fixed the technical-reference tabs: display equations written with `\[ ... \]` are now extracted and sent to `st.latex()` instead of being passed through Markdown as literal text.
+- Converted inline `\( ... \)` expressions to Streamlit-supported `$ ... $` delimiters before Markdown rendering.
+- Kept prose, headings, lists, and citations in Markdown; equations are rendered separately.
+- Added regression coverage for the Model Library renderer and reference delimiters.
+
 # Changelog
 
 ## v4.2.0 - flow diagram and carbon credits

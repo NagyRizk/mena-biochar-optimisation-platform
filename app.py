@@ -1,4 +1,5 @@
 import os
+import re
 from dataclasses import replace, asdict
 from pathlib import Path
 import numpy as np
@@ -68,6 +69,30 @@ def source_note(model_ids):
 def render_math(key):
     for kind, text in BY_PAGE[key]:
         (st.markdown if kind == "md" else st.latex)(text)
+
+
+def render_markdown_with_latex(source):
+    """Render Markdown while routing \[...\] display equations to Streamlit's LaTeX renderer.
+
+    Streamlit Markdown does not consistently render the MathJax-style \[...\] delimiters.
+    Extracting those blocks prevents raw LaTeX from appearing in the Model Library.
+    Inline \(...\) delimiters are converted to Streamlit's supported $...$ syntax.
+    """
+    pattern = re.compile(r"\\\[(.*?)\\\]", flags=re.DOTALL)
+    cursor = 0
+    for match in pattern.finditer(source):
+        markdown_part = source[cursor:match.start()]
+        markdown_part = re.sub(r"\\\((.*?)\\\)", r"$\1$", markdown_part, flags=re.DOTALL)
+        if markdown_part.strip():
+            st.markdown(markdown_part)
+        equation = match.group(1).strip()
+        if equation:
+            st.latex(equation)
+        cursor = match.end()
+    remainder = source[cursor:]
+    remainder = re.sub(r"\\\((.*?)\\\)", r"$\1$", remainder, flags=re.DOTALL)
+    if remainder.strip():
+        st.markdown(remainder)
 
 def log_view(df, name):
     st.dataframe(df, width="stretch", hide_index=True)
@@ -551,7 +576,7 @@ if page == "Model Library":
     with tabs[0]:
         st.subheader("Technical model")
         st.caption("Mass balance · thermodynamics · process heat · particle heat transfer · pyrolysis kinetics · carbon accounting · prediction model.")
-        st.markdown(doc.split("## 8. Economics")[0])
+        render_markdown_with_latex(doc.split("## 8. Economics")[0])
         st.caption("For each equation, check the source register below for governing-equation references, numerical method references, parameter provenance and validation status.")
     with tabs[1]:
         st.subheader("Economic model")
@@ -559,7 +584,7 @@ if page == "Model Library":
         econ_start = doc.find("## 8. Economics")
         opt_start = doc.find("## 9. Optimisation")
         if econ_start >= 0:
-            st.markdown(doc[econ_start:opt_start if opt_start > econ_start else len(doc)])
+            render_markdown_with_latex(doc[econ_start:opt_start if opt_start > econ_start else len(doc)])
         else:
             st.warning("The economics section could not be located in the technical reference.")
         st.markdown("### Economic equations at a glance")

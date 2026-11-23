@@ -5,77 +5,99 @@
       "name": "Dry-basis feedstock and product mass balance",
       "source": "Felder, Rousseau & Bullard, Elementary Principles of Chemical Processes, 4th ed., Wiley (2016), material balances.",
       "url": "https://www.wiley.com/en-us/Elementary+Principles+of+Chemical+Processes%2C+4th+Edition-p-9781119586102",
-      "status": "Conservation identity; implementation tested. Product split values come from the ML-001 predictor or user inputs."
+      "status": "Conservation identity; implementation tested. Product split values come from the ML-001 predictor or user inputs.",
+      "citation_map": "references/mathematical_model_references.csv",
+      "citation_scope_note": "See equation-level map; distinguish equation source, parameter source, software citation, and validation evidence."
     },
     {
       "id": "ENERGY-001",
       "name": "Feed heating and water evaporation duty",
-      "source": "NIST Chemistry WebBook, SRD 69, Water thermochemistry and phase-change data; Chase (1998), NIST-JANAF Thermochemical Tables.",
-      "url": "https://webbook.nist.gov/cgi/cbook.cgi?Name=water",
-      "status": "Screening heat-duty balance. CoolProp/IAPWS-95 is used when available; otherwise constant-cp fallback. Global heating efficiency and heat-loss fraction are simplified assumptions."
+      "source": "Smith et al., Introduction to Chemical Engineering Thermodynamics; IAPWS R6-95(2018); Bell et al. (2014) CoolProp.",
+      "url": "https://iapws.org/technical-guidance/release/IAPWS-95",
+      "status": "Screening heat-duty balance. CoolProp/IAPWS-95 is used when available; otherwise constant-cp fallback. Global heating efficiency and heat-loss fraction are simplified assumptions.",
+      "citation_map": "references/mathematical_model_references.csv",
+      "citation_scope_note": "See equation-level map; distinguish equation source, parameter source, software citation, and validation evidence."
     },
     {
       "id": "PYRO-001",
       "name": "Biomass pyrolysis product distribution",
       "source": "Di Blasi, C. (2008). Modeling chemical and physical processes of wood and biomass pyrolysis. Progress in Energy and Combustion Science, 34(1), 47–90. DOI: 10.1016/j.pecs.2006.12.001.",
       "url": "https://doi.org/10.1016/j.pecs.2006.12.001",
-      "status": "Literature-informed model structure; numerical product fractions are scenario inputs and must be validated for the feedstock/reactor."
+      "status": "Literature-informed model structure; numerical product fractions are scenario inputs and must be validated for the feedstock/reactor.",
+      "citation_map": "references/mathematical_model_references.csv",
+      "citation_scope_note": "See equation-level map; distinguish equation source, parameter source, software citation, and validation evidence."
     },
     {
       "id": "ECON-001",
       "name": "Capital recovery factor and discounted cash flow",
       "source": "Peters, Timmerhaus & West, Plant Design and Economics for Chemical Engineers, 5th ed., McGraw-Hill (2003).",
       "url": "https://www.mheducation.com/highered/mhp/product/plant-design-economics-chemical-engineers-fifth-edition.html",
-      "status": "Standard financial mathematics; all project-specific financial inputs are user-supplied assumptions."
+      "status": "Standard financial mathematics; all project-specific financial inputs are user-supplied assumptions.",
+      "citation_map": "references/mathematical_model_references.csv",
+      "citation_scope_note": "See equation-level map; distinguish equation source, parameter source, software citation, and validation evidence."
     },
     {
       "id": "OPT-001",
       "name": "Scenario Pareto screening",
-      "source": "Deb, K. (2001). Multi-Objective Optimization Using Evolutionary Algorithms. Wiley.",
-      "url": "https://doi.org/10.1002/9780470371461",
-      "status": "Deterministic comparison of candidate scenarios; optimality is limited to the scenarios supplied."
+      "source": "Ehrgott (2005), Multicriteria Optimization; Deb (2001), Multi-Objective Optimization Using Evolutionary Algorithms. Implementation is finite-grid enumeration and Pareto filtering only.",
+      "url": "https://doi.org/10.1007/3-540-27659-9",
+      "status": "Deterministic comparison of candidate scenarios; optimality is limited to the scenarios supplied.",
+      "citation_map": "references/mathematical_model_references.csv",
+      "citation_scope_note": "See equation-level map; distinguish equation source, parameter source, software citation, and validation evidence."
     },
     {
       "id": "ML-001",
       "name": "Data-driven char property predictor",
       "source": "Breiman, L. (2001). Random Forests. Machine Learning 45, 5-32. DOI: 10.1023/A:1010933404324.",
       "url": "https://doi.org/10.1023/A:1010933404324",
-      "status": "Five-fold publication-grouped CV against a feedstock-class mean baseline. Inference selects the class mean for any target where it beats the random forest; tree spread is not a calibrated interval. Lab/pilot literature data only; not reactor-specific."
+      "status": "Random forest algorithm cited to Breiman (2001); grouped CV procedure cited to scikit-learn GroupKFold documentation. Citations do not validate this dataset or predictive skill; external test set remains required.",
+      "citation_map": "references/mathematical_model_references.csv",
+      "citation_scope_note": "See equation-level map; distinguish equation source, parameter source, software citation, and validation evidence."
     },
     {
       "id": "PERM-001",
       "name": "Char carbon permanence from H/C (screening)",
-      "source": "Shape follows the common H/Corg quality classes (0.4 / 0.7; 0.7 is the EBC/IBI limit). Numeric values are placeholders, not a published regression.",
-      "url": "https://www.european-biochar.org/en/ct/2-EBC-Guidelines",
-      "status": "PLACEHOLDER VALUES. Replace with a published BC+100 regression before any quantitative claim."
+      "source": "Puro Standard Biochar Methodology (2025 v2) and EBC Guidelines (v10.4) for methodology/measurement context; current f_stable(H/C) remains an explicitly unvalidated placeholder.",
+      "url": "https://puro.earth/cdr-infrastructure/methodologies/",
+      "status": "PLACEHOLDER VALUES. Replace with a published BC+100 regression before any quantitative claim.",
+      "citation_map": "references/mathematical_model_references.csv",
+      "citation_scope_note": "See equation-level map; distinguish equation source, parameter source, software citation, and validation evidence."
     },
     {
       "id": "DESIGN-001",
       "name": "Predicted-yield process design and grid optimisation",
-      "source": "Deb, K. (2001) for Pareto dominance; grid enumeration (no stochastic optimiser).",
-      "url": "https://doi.org/10.1002/9780470371461",
-      "status": "Optimal only within the grid and the predictor's validity range. Liquid/gas split, costs and carbon price are assumptions."
+      "source": "Ehrgott (2005) and Deb (2001), Pareto dominance background; grid enumeration is a deterministic implementation choice.",
+      "url": "https://doi.org/10.1007/3-540-27659-9",
+      "status": "Optimal only within the grid and the predictor's validity range. Liquid/gas split, costs and carbon price are assumptions.",
+      "citation_map": "references/mathematical_model_references.csv",
+      "citation_scope_note": "See equation-level map; distinguish equation source, parameter source, software citation, and validation evidence."
     },
     {
       "id": "PATH-001",
       "name": "CDR pathway comparison",
       "source": "IPCC AR6 WGIII Chapter 12, Table 12.6.",
       "url": "https://www.ipcc.ch/report/ar6/wg3/chapter/chapter-12/",
-      "status": "DACCS and enhanced weathering re-verified; biochar, BECCS and A/R figures recalled and flagged for re-check."
+      "status": "DACCS and enhanced weathering re-verified; biochar, BECCS and A/R figures recalled and flagged for re-check.",
+      "citation_map": "references/mathematical_model_references.csv",
+      "citation_scope_note": "See equation-level map; distinguish equation source, parameter source, software citation, and validation evidence."
     },
     {
       "id": "PART-001",
       "name": "Particle heat transfer (1-D spherical conduction, finite volume)",
-      "source": "Verified in code against the analytical sphere solution (Carslaw & Jaeger, Conduction of Heat in Solids, 2nd ed., 1959).",
-      "url": "https://global.oup.com/academic/product/conduction-of-heat-in-solids-9780198533689",
-      "status": "Verified (solves its equations correctly: <0.1% vs analytical). Not validated against measured particle temperatures; property values and h are assumptions; single particle, no bed effects."
+      "source": "Bird, Stewart & Lightfoot (2002); Incropera et al. (2011); Carslaw & Jaeger (1959) analytical sphere verification; Di Blasi (2003) particle pyrolysis modelling precedent.",
+      "url": "https://doi.org/10.1016/S0196-8904(02)00252-2",
+      "status": "Verified (solves its equations correctly: <0.1% vs analytical). Not validated against measured particle temperatures; property values and h are assumptions; single particle, no bed effects.",
+      "citation_map": "references/mathematical_model_references.csv",
+      "citation_scope_note": "See equation-level map; distinguish equation source, parameter source, software citation, and validation evidence."
     },
     {
       "id": "KIN-001",
       "name": "One-step global devolatilisation kinetics",
       "source": "Di Blasi, C. and Branca, C. (2001). Kinetics of primary product formation from wood pyrolysis. Ind. Eng. Chem. Res. 40(23), 5547-5556. DOI: 10.1021/ie000997e.",
       "url": "https://doi.org/10.1021/ie000997e",
-      "status": "Single global first-order devolatilisation step. Beech-wood parameters fitted over 573–708 K; other feedstocks and temperatures outside this range are extrapolations. Used for conversion time only, not product yields."
+      "status": "Single global first-order devolatilisation step. Beech-wood parameters fitted over 573–708 K; other feedstocks and temperatures outside this range are extrapolations. Used for conversion time only, not product yields.",
+      "citation_map": "references/mathematical_model_references.csv",
+      "citation_scope_note": "See equation-level map; distinguish equation source, parameter source, software citation, and validation evidence."
     }
   ]
 }

@@ -190,11 +190,12 @@ def structure_cached(htt, hc, ash, cls):
 
 # ------------------------------------------------------------------ navigation, presets, callbacks
 NAV = {"Overview": ("Overview", "Start here"),
-       "Evidence": ("1 \u00b7 Evidence", "What the literature reports"),
-       "Biochar": ("2 \u00b7 Biochar", "Properties and 3D structure"),
-       "Process": ("3 \u00b7 Process", "Mass, heat, particle behaviour"),
-       "Economics": ("4 \u00b7 Economics", "Cash flow and sensitivity"),
-       "Optimize": ("5 \u00b7 Optimize", "Find the best design")}
+       "Evidence": ("1 · Evidence", "What the literature reports"),
+       "Case Studies": ("2 · Case studies", "Compare model outputs with published experiments"),
+       "Biochar": ("3 · Biochar", "Properties and 3D structure"),
+       "Process": ("4 · Process", "Mass, heat, particle behaviour"),
+       "Economics": ("5 · Economics", "Cash flow and sensitivity"),
+       "Optimize": ("6 · Optimize", "Find the best design")}
 NAV_IDS = list(NAV)
 PRESETS = {
     "Date palm \u00b7 540 \u00b0C": {"process": "slow_pyrolysis", "feed": "Date palm residues", "htt": 540, "dur": 120, "hr": 10, "liquid_share": 0.55},
@@ -237,8 +238,8 @@ def on_proc_change():
 
 def stepper(cur):
     st.markdown('<div class="flowbar"></div>', unsafe_allow_html=True)
-    ids = ["Overview", "Evidence", "Biochar", "Process", "Economics", "Optimize"]
-    cols = st.columns([0.8, 1, 1, 1, 1, 1])
+    ids = NAV_IDS
+    cols = st.columns(len(ids))
     for c, sid in zip(cols, ids):
         c.button("\u2302 Home" if sid == "Overview" else NAV[sid][0], key=f"fl_{sid}", type="primary" if sid == cur else "secondary", width="stretch", on_click=goto, args=(sid,))
 
@@ -269,7 +270,7 @@ with st.sidebar:
     st.write("")
     st.radio("Navigation", NAV_IDS, key="nav", format_func=lambda i: NAV[i][0], captions=[NAV[i][1] for i in NAV_IDS], label_visibility="collapsed")
     page = S.nav
-    if page == "Evidence":
+    if page in ("Evidence", "Case Studies"):
         st.markdown('<div class="side-h">Scenario</div>', unsafe_allow_html=True)
         st.caption("The literature evidence is independent of your scenario. Your scenario controls appear again from step 2.")
     else:
@@ -650,6 +651,59 @@ elif page == "Evidence":
         st.dataframe(src.drop(columns=["DOI"]), width="stretch", hide_index=True, column_config={"DOI link":st.column_config.LinkColumn("Open source DOI")})
         st.caption("The structured records are drawn from the bundled biochar production dataset (April 2024). Values remain attached to their publication and experimental conditions. Missing fields are not imputed for this dashboard.")
     nav_footer("Evidence")
+
+# ================================================================== CASE STUDIES
+elif page == "Case Studies":
+    stepper("Case Studies")
+    header("Ground cases & model comparison", "Published laboratory and pilot-plant results placed beside the platform's estimates. These are benchmarks, not proof of plant-scale validation.")
+    cases = pd.read_csv(Path(__file__).parent / "data" / "case_studies.csv")
+    st.warning("A literature comparison is not automatically an independent validation: the predictor is trained on a bundled literature dataset. The cited Mohan et al. paper title and DOI were not found as exact strings in the bundled training CSV, but record-level overlap must still be checked before treating this as a formal holdout test.")
+    case_labels = {r.case_id: f"{r.case_id} · {r.feedstock} · {r.study}" for r in cases.itertuples()}
+    chosen_id = st.selectbox("Select a published case", list(case_labels), format_func=lambda k: case_labels[k])
+    c = cases[cases.case_id == chosen_id].iloc[0]
+    section("Reported experimental / pilot conditions")
+    st.markdown(f"**{c['study']}**  ")
+    st.markdown(f"Feedstock: **{c['feedstock']}** · Route: **{c['process']}** · Evidence type: **{c['evidence_type']}**")
+    st.caption(str(c['reported_basis']))
+    metrics = []
+    for label, col, unit in [("Temperature", "temperature_C", "°C"), ("Residence time", "residence_min", "min"), ("Heating rate", "heating_rate_C_min", "°C/min"), ("Char yield", "char_yield_wt_dry", "wt% dry feed"), ("Char carbon", "char_carbon_wt", "wt%"), ("H/C", "H_C_molar", "molar"), ("Heat demand", "energy_demand_MJ_kg_dry", "MJ/kg"), ("Energy efficiency", "energy_efficiency_pct", "%")]:
+        v = c[col]
+        if pd.notna(v) and str(v).strip(): metrics.append((label, f"{float(v):g} {unit}"))
+    cols = st.columns(min(4, max(1, len(metrics))))
+    for i, (lab, val) in enumerate(metrics): cols[i % len(cols)].metric(lab, val)
+    st.markdown(f"**Primary source:** [{c['doi']}]({c['url']})")
+    st.caption(str(c['notes']))
+
+    if c['case_id'] in ("CS-01", "CS-02"):
+        section("Run the platform at the published conditions")
+        pred = get_predictor().predict(str(c['feedstock_class']), float(c['temperature_C']), float(c['residence_min']), float(c['heating_rate_C_min']))
+        a, b, d = st.columns(3)
+        observed = float(c['char_yield_wt_dry']); estimated = float(pred['Yield']['mean'])
+        a.metric("Reported char yield", f"{observed:.1f} wt%")
+        b.metric("Platform estimate", f"{estimated:.1f} wt%", help="Current literature-trained predictor evaluated at the study's nominal conditions.")
+        delta = estimated - observed
+        d.metric("Estimate − reported", f"{delta:+.1f} percentage points")
+        st.markdown("**Other property comparison**")
+        prop_rows = []
+        for key, label, unit in [("C", "Char carbon", "wt%"), ("H_C", "Molar H/C", "")]:
+            obs = c['char_carbon_wt'] if key == 'C' else c['H_C_molar']
+            if pd.notna(obs): prop_rows.append({"Metric":label,"Study result":float(obs),"Platform estimate":float(pred[key]['mean']),"Difference":float(pred[key]['mean'])-float(obs),"Unit":unit})
+        st.dataframe(pd.DataFrame(prop_rows), hide_index=True, width="stretch")
+        st.caption("Interpretation: this is a same-condition literature comparison, not a blind holdout test. Rice husk is mapped to the herbaceous class because the current model has no rice-husk-specific class; this adds feedstock-class mismatch. Model tree spread is not a calibrated confidence interval.")
+        if pred.get('extrapolating'): st.warning("The selected temperature is outside the predictor's observed temperature range for this feedstock class.")
+    else:
+        st.info("This case is retained as a context benchmark, but the publication reports a range/approximate value rather than a directly matched point. The app deliberately does not compute a misleading pointwise prediction error.")
+
+    section("Cross-case benchmark register")
+    display = cases[["case_id","feedstock","process","temperature_C","residence_min","heating_rate_C_min","char_yield_wt_dry","char_carbon_wt","H_C_molar","energy_demand_MJ_kg_dry","energy_efficiency_pct","evidence_type","doi"]].copy()
+    st.dataframe(display, width="stretch", hide_index=True)
+    st.markdown("**Pilot-plant energy benchmark:** the 2026 pilot-plant study reports a Case A bottom-outlet average process heat demand of 1.37 ± 0.20 MJ/kg and energy efficiency of 80.35 ± 2.86%. This is a separate system-boundary check; reconcile feed moisture, heating value basis, reactor boundary and recovered heat before treating it as directly comparable to this platform's purchased-heat result. [Source: Energy, exergy and mass balances of a biomass pyrolysis pilot plant](https://doi.org/10.1016/j.enconman.2026.121154).")
+    section("Numerical provenance register")
+    prov = pd.read_csv(Path(__file__).parent / "references" / "numerical_assumptions.csv")
+    prov["Source link"] = prov["url"].fillna("")
+    st.dataframe(prov.drop(columns=["url"]), width="stretch", hide_index=True, column_config={"Source link":st.column_config.LinkColumn("Source link")})
+    st.caption("Calculated outputs inherit the sources and assumptions of their input terms and equations. The Technical and Economics calculation logs identify the equation/model ID per output. Empty source links mean the value is intentionally marked as an assumption or exact identity, not that a citation has been fabricated.")
+    nav_footer("Case Studies")
 
 # ================================================================== BIOCHAR
 elif page == "Biochar":

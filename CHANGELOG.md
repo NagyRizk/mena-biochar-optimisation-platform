@@ -62,3 +62,16 @@
 - Corrected particle conversion screening to use each candidate's predicted char fraction rather than a single fixed value.
 - Added explicit warning for particle-kinetics use outside the cited 300–435 °C fit range.
 - Updated optimization model documentation and calculation log.
+
+## v4.2.1 — cited numerical assumptions and ground cases
+- Added a Case Studies page with condition-matched model-vs-literature comparisons for rice husk and corn stover, plus rice-straw and pilot-plant energy benchmarks.
+- Added a numerical provenance register for model constants, defaults, process anchors, economic assumptions and scenario-only values.
+- Added citations/qualifications and explicit cautions against treating literature comparisons as independent validation.
+
+## v4.2.2 — expanded mathematical citations
+
+- Added equation-level model citation matrix covering mass/energy balances, water properties, particle conduction and kinetics, ML, carbon accounting, economics, Pareto screening, and process-specific anchors.
+- Added uploaded 122-record bibliography to `data/reference_bibliography_uploaded.csv` and a curated relevance crosswalk.
+- Corrected technical model reference version label to v4.2.2.
+- Explicitly separated governing-equation sources, parameter sources, software citations, experimental evidence, numerical verification and assumptions.
+- Clarified that torrefaction/gasification splits, HTC interpolation, particle properties, lifecycle emissions and several economic defaults remain placeholders rather than cited empirical constants.

@@ -28,3 +28,12 @@ The platform's particle kinetics are a single global first-order model; they are
 ## Tests
 
 Run `pytest -q` from the project root.
+
+## Mathematical citations and evidence provenance (v4.2.2)
+
+- `docs/TECHNICAL_MODEL_REFERENCE.md` contains the governing equations and model limitations.
+- `references/mathematical_model_references.csv` maps model IDs to equation, numerical-method, parameter and validation sources.
+- `docs/UPLOADED_BIBLIOGRAPHY_CROSSWALK.md` explains how selected records from the supplied 122-paper bibliography may support training and validation.
+- `data/reference_bibliography_uploaded.csv` preserves the supplied bibliography metadata.
+
+A citation for an equation does not validate an empirical coefficient or the platform prediction. Review the citation-scope and limitations columns before using outputs for design, investment or carbon-credit claims.

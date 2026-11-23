@@ -4,12 +4,14 @@
 
 This evidence pack separates (1) regional need indicators, (2) evidence that a biochar or activated-carbon application can technically work, and (3) demonstrated commercial demand. These are not interchangeable. The heatmap is an ordinal **evidence-fit** score from 0 to 3; it is not a market-size estimate, probability of sale, market share, or revenue forecast.
 
-- 0 — no relevant evidence located in this source scan.
-- 1 — weak or indirect evidence (generic biomass-carbon literature, sector need, or feedstock inventory without feedstock-specific MENA application validation).
-- 2 — promising evidence (a relevant regional study or MENA-specific process/application case, with material caveats).
-- 3 — direct application evidence (a feedstock/application combination experimentally tested in a relevant regional setting or specifically reviewed as an electrode precursor). This does not mean commercial qualification.
+- 0 — no relevant feedstock-specific application evidence identified in this source scan (not proof none exists).
+- 1 — indirect, feedstock-specific research outside MENA, or regional evidence with a material feedstock mismatch.
+- 2 — the specific feedstock was included in a relevant MENA application study, but important performance, comparator or scale limitations remain.
+- 3 — the feedstock-derived product was directly tested in the relevant application in a MENA setting; this is not commercial qualification.
 
-The two downloadable registers are `references/mena_market_evidence.csv` and `references/mena_feedstock_market_heatmap.csv`. Each market-evidence record includes source URL, evidence type and limitations. Each heatmap cell includes a rationale and source URL(s).
+The score measures **evidence strength only**. It does not measure intrinsic technical suitability, product quality, market demand, market size, probability of sale, profitability or revenue. Market-need indicators are presented separately; project economics must be calculated using local supply, processing, logistics and offtake data.
+
+The two downloadable registers are `references/mena_market_evidence.csv` and `references/mena_feedstock_market_heatmap.csv` (now interpreted as a feedstock–application evidence matrix). Each market-evidence record includes source URL, evidence type and limitations. Each heatmap cell includes a rationale and source URL(s).
 
 ## Regional demand and need signals
 

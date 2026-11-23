@@ -1,4 +1,4 @@
-# Technical model reference — MENA Biochar Engineering Platform v4.2.2
+# Technical model reference — MENA Biochar Engineering Platform v4.3.0
 
 This document describes the equations implemented in `engine/`. It distinguishes conservation equations and numerical solvers from empirical assumptions and screening correlations. It is not a claim that the platform is a validated reactor digital twin.
 
@@ -32,7 +32,7 @@ Y_{char}+Y_{liquid}+Y_{gas}+Y_{other}=1
 \epsilon_m=\dot m_{dry}-\sum_i\dot m_i
 \]
 
-The code rejects a product split that does not sum to unity (within tolerance). The model is an overall mass balance; it does not resolve individual gas species, condensable species or ash partitioning.
+The code rejects a product split that does not sum to unity (within tolerance). Non-finite numeric inputs are rejected explicitly; NaN must not bypass range checks. The model is an overall mass balance; it does not resolve individual gas species, condensable species or ash partitioning.
 
 ## 3. Process heat and thermodynamics — ENERGY-001
 
@@ -72,7 +72,7 @@ Q_{gross}=\frac{Q_{useful}}{1-\phi},\qquad
 Q_{purchased}=\frac{Q_{gross}}{\eta_h}
 \]
 
-The input is named `dryer_efficiency` internally for backward compatibility but is labelled “Heating efficiency” in the UI. It is applied to the overall useful duty, not only to a standalone dryer. This is a simplified plant-level allowance, not a unit-operation dryer model.
+The atmospheric evaporation calculation is only valid for reactor temperatures at or above approximately 100 °C; the code rejects sub-boiling non-HTC cases rather than silently calculating steam generation below saturation. The input is named `dryer_efficiency` internally for backward compatibility but is labelled “Heating efficiency” in the UI. It is applied to the overall useful duty, not only to a standalone dryer. This is a simplified plant-level allowance, not a unit-operation dryer model.
 
 ### 3.3 Hydrothermal carbonisation (HTC)
 
@@ -110,7 +110,7 @@ The liquid sales revenue is calculated only on the undiverted fraction:
 R_{liquid}=m_{liquid}(1-f_{L\to H})p_{liquid}
 \]
 
-This allocation avoids counting the same liquid product as both fuel and a saleable product. Gas-cleaning losses, combustion efficiency by species, flue-gas heat recovery and emissions are not explicitly modelled.
+This allocation avoids counting the same liquid product as both fuel and a saleable product. Gas-cleaning losses, combustion efficiency by species, flue-gas heat recovery and emissions are not explicitly modelled. If surplus heat is allocated to electricity export, the exported thermal input is deducted from the remaining surplus; it is not simultaneously counted as saleable heat.
 
 ## 4. Carbon accounting screen — PERM-001
 
@@ -133,7 +133,7 @@ CO_{2,gross}=m_{char}x_{C,char}f_{stable}\frac{44}{12}
 CO_{2,net,proxy}=CO_{2,gross}-E_{lifecycle,user}
 \]
 
-The \(f_{stable}(H/C)\) map is a placeholder interpolation, not a validated BC+100 regression. Lifecycle emissions are entered by the user and default to zero; therefore the displayed net-removal proxy must not be interpreted as measured net carbon dioxide removal, verified storage, or eligible carbon credits. A defensible CDR assessment requires a defined system boundary, feedstock counterfactual, measured carbon content, permanence model, leakage/reversal treatment, transport, process energy, application emissions and MRV.
+The \(f_{stable}(H/C)\) map is a placeholder interpolation, not a validated BC+100 regression. The platform does not implement the IPCC 2019 permanence calculation or a complete Verra/EBC methodology. Therefore carbon revenue calculated from this proxy is illustrative scenario revenue only, not a forecast of issued credits or verified revenue. Lifecycle emissions are entered by the user and default to zero; therefore the displayed net-removal proxy must not be interpreted as measured net carbon dioxide removal, verified storage, or eligible carbon credits. A defensible CDR assessment requires a defined system boundary, feedstock counterfactual, measured carbon content, permanence model, leakage/reversal treatment, transport, process energy, application emissions and MRV.
 
 ## 5. Particle heat transfer — PART-001
 
@@ -192,7 +192,7 @@ The predictor is a random forest (200 trees; minimum leaf size 8; maximum featur
 - heating rate,
 - one-hot feedstock class.
 
-Missing numerical inputs are median-imputed. Evaluation uses five-fold `GroupKFold`, grouping by publication title to reduce leakage between observations from the same paper. A feedstock-class mean baseline is also evaluated. For any target where the baseline has higher grouped-CV \(R^2\) than the forest, inference now uses that simpler baseline instead of the inferior forest. Tree-to-tree standard deviation is model disagreement, not a prediction interval. The dataset contains published laboratory/pilot observations and does not establish performance in a particular commercial reactor or in all regional feedstocks.
+Missing numerical inputs are median-imputed. Evaluation uses five-fold `GroupKFold`, grouping by publication title to reduce leakage between observations from the same paper. A feedstock-class mean baseline is also evaluated. For any target where the baseline has higher grouped-CV \(R^2\) than the forest, inference now uses that simpler baseline instead of the inferior forest. Tree-to-tree standard deviation is model disagreement, not a prediction interval. The dataset contains published laboratory/pilot observations and does not establish performance in a particular commercial reactor or in all regional feedstocks. In the current bundled dataset, publication-grouped five-fold CV gave Yield R²=0.376 (MAE=7.50 percentage points; n=460; 52 papers), H/C R²=0.511 (MAE=0.152; n=1,006; 97 papers). For char C and Ash, the feedstock-class mean baseline outperformed the random forest, so inference uses the simpler baseline for those targets.
 
 ## 8. Economics — ECON-001
 

@@ -1,3 +1,14 @@
+## 4.3.0 — engineering audit and correction release
+
+- Added finite-value validation so NaN/Infinity cannot bypass process/economic input checks.
+- Rejects non-HTC evaporation cases below atmospheric boiling rather than calculating latent heat at an impossible state.
+- Exposes feed-carbon minus char-carbon residual and applies a numerical feasibility tolerance.
+- Deducts thermal energy allocated to electricity export from remaining surplus heat; reports exported heat and generated electricity explicitly.
+- Validates economic prices/costs, annualisation fraction, electricity export share, conversion efficiency, supported process names and integer project life.
+- Clarifies that carbon permanence mapping and lifecycle net-removal are unvalidated screening proxies, not crediting calculations.
+- Clarifies finite-grid/Pareto optimality and documents unresolved model validation needs in `docs/TECHNICAL_AUDIT_v4.3.0.md`.
+- Regression suite: 42 tests passed.
+
 ## 4.2.7 — Model Library display-math rendering fix
 
 - Fixed the technical-reference tabs: display equations written with `\[ ... \]` are now extracted and sent to `st.latex()` instead of being passed through Markdown as literal text.
@@ -109,3 +120,12 @@
 ## 4.2.6 — Model Library LaTeX repair
 - Corrected double-escaped LaTeX commands in the optimisation equations and economic equation summary.
 - Added a regression test to reject doubled command escapes in equation strings.
+
+
+## 4.2.8 — Feedstock–application evidence matrix redesign
+
+- Replaced ambiguous "fit" interpretation with an explicit evidence-strength scale.
+- Reclassified cells conservatively; zero means no relevant feedstock-specific evidence identified in this scan, not impossibility.
+- Separated application evidence from market need and commercial viability.
+- Added cell-level evidence inspection, source links, full register and CSV export.
+- Updated market-opportunity methodology documentation.

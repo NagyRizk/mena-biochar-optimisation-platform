@@ -41,7 +41,7 @@
       "name": "Scenario Pareto screening",
       "source": "Ehrgott (2005), Multicriteria Optimization; Deb (2001), Multi-Objective Optimization Using Evolutionary Algorithms. Implementation is finite-grid enumeration and Pareto filtering only.",
       "url": "https://doi.org/10.1007/3-540-27659-9",
-      "status": "Deterministic comparison of candidate scenarios; optimality is limited to the scenarios supplied.",
+      "status": "Finite-grid enumeration and Pareto filtering only. Feasible optimum is conditional on grid resolution, model domain and input assumptions; not a global optimum.",
       "citation_map": "references/mathematical_model_references.csv",
       "citation_scope_note": "See equation-level map; distinguish equation source, parameter source, software citation, and validation evidence."
     },
@@ -59,7 +59,7 @@
       "name": "Char carbon permanence from H/C (screening)",
       "source": "Puro Standard Biochar Methodology (2025 v2) and EBC Guidelines (v10.4) for methodology/measurement context; current f_stable(H/C) remains an explicitly unvalidated placeholder.",
       "url": "https://puro.earth/cdr-infrastructure/methodologies/",
-      "status": "PLACEHOLDER VALUES. Replace with a published BC+100 regression before any quantitative claim.",
+      "status": "PLACEHOLDER ONLY. H/C thresholds classify quality but do not supply this numerical stability regression. Not suitable for credit issuance, verified CDR claims, or bankable carbon revenue.",
       "citation_map": "references/mathematical_model_references.csv",
       "citation_scope_note": "See equation-level map; distinguish equation source, parameter source, software citation, and validation evidence."
     },

@@ -10,6 +10,10 @@ P_ATM = 101325.0
 def water_enthalpies(T_in_C: float, T_out_C: float, P: float = P_ATM,
                      cp_w=4.18, cp_v=2.01, hfg=2257.0) -> dict:
     """Specific heat to take liquid water at T_in to steam at T_out, split in three steps (kJ/kg)."""
+    if T_out_C < 100.0 and abs(P - P_ATM) < 1.0:
+        raise ValueError("This evaporation model requires outlet temperature >= 100 °C at approximately 1 atm.")
+    if T_in_C >= 100.0:
+        raise ValueError("Feed water inlet temperature must be below the atmospheric saturation temperature.")
     if HAVE_COOLPROP:
         Ts = PropsSI("T", "P", P, "Q", 0, "Water") - 273.15
         hf = PropsSI("H", "P", P, "Q", 0, "Water") / 1000

@@ -208,3 +208,39 @@ def test_particle_kinetics_validity_flag():
     inside = simulate_particle(replace(base, T_inf_C=350.0), 1.0, dt_s=0.5)
     assert outside["kinetics_extrapolated"] is True
     assert inside["kinetics_extrapolated"] is False
+
+
+def test_nan_inputs_are_rejected():
+    with pytest.raises(ValueError):
+        calculate_technical(ProcessInputs(moisture_wet_basis=float("nan")))
+    with pytest.raises(ValueError):
+        calculate_economics(calculate_technical(ProcessInputs()), ProcessInputs(), EconomicInputs(capex_usd=float("nan")))
+
+
+def test_sub_boiling_pyrolysis_evaporation_assumption_is_rejected():
+    with pytest.raises(ValueError, match="at least 100"):
+        calculate_technical(ProcessInputs(reactor_temp_C=80.0))
+
+
+def test_electricity_export_does_not_double_count_surplus_heat():
+    p = ProcessInputs()
+    t = calculate_technical(p)
+    e = EconomicInputs(electricity_export_fraction_of_surplus=0.5, electricity_conversion_efficiency=0.3)
+    ec = calculate_economics(t, p, e)
+    assert ec["export_heat_GJ_y"] == pytest.approx(t["heat_surplus_GJ_y"] * 0.5)
+    assert ec["remaining_heat_surplus_GJ_y"] + ec["export_heat_GJ_y"] == pytest.approx(t["heat_surplus_GJ_y"])
+    assert ec["export_electricity_kwh_y"] == pytest.approx(ec["export_heat_GJ_y"] * 277.7777778 * 0.3)
+
+
+def test_invalid_economic_export_fraction_rejected():
+    p = ProcessInputs(); t = calculate_technical(p)
+    with pytest.raises(ValueError):
+        calculate_economics(t, p, EconomicInputs(electricity_export_fraction_of_surplus=1.2))
+
+
+def test_unknown_process_and_noninteger_life_are_rejected():
+    with pytest.raises(ValueError, match="Unsupported process"):
+        calculate_technical(ProcessInputs(process_type="magic"))
+    p = ProcessInputs(); t = calculate_technical(p)
+    with pytest.raises(ValueError, match="whole number"):
+        calculate_economics(t, p, EconomicInputs(project_life_y=12.5))

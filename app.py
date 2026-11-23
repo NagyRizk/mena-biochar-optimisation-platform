@@ -686,20 +686,46 @@ elif page == "Market & Value":
         st.dataframe(maturity,width="stretch",hide_index=True)
         st.caption("Sources: FAO Arab-region land degradation; ESCWA GCC desalination; World Bank wastewater reuse; IBI/USBI 2023 and 2025 market reports; Egyptian and UAE case studies. Full citations are in the Evidence register tab.")
     with tabs[1]:
-        st.subheader("Feedstock-to-market evidence-fit heatmap")
-        st.caption("Scale: 0 = no evidence located in this scan; 1 = weak/indirect; 2 = promising; 3 = direct application evidence. This is a qualitative evidence map, not a commercial demand or product-quality score.")
+        st.subheader("Which feedstock–application pairs have actually been studied?")
+        st.markdown("This matrix measures **strength of published evidence for the specific feedstock–application pairing**. It does not score whether the product will work commercially. Market demand is assessed separately in the Market signals tab; project economics are assessed in the platform optimiser.")
+        st.markdown("""**Evidence scale**
+- **0 — Not identified:** no relevant feedstock-specific application evidence found in this source scan. This is not proof that no study exists.
+- **1 — Indirect / outside MENA:** feedstock-specific research exists, but it is not a MENA application demonstration, or the regional evidence has a feedstock mismatch.
+- **2 — MENA feedstock tested:** the specific feedstock appears in a relevant MENA application study, but performance, comparator or scale-up limitations remain.
+- **3 — Direct MENA application test:** the feedstock-derived product was directly tested in the relevant application in a MENA setting. This is still not commercial qualification.""")
         if not hdf.empty:
             pivot = hdf.pivot(index="Feedstock",columns="Market application",values="Evidence-fit score (0-3)")
-            fig = go.Figure(data=go.Heatmap(z=pivot.values,x=pivot.columns.tolist(),y=pivot.index.tolist(),zmin=0,zmax=3,colorscale=[[0,"#f2f2f2"],[0.33,"#f1d58a"],[0.66,"#83b9a4"],[1,"#1f7a5a"]],text=pivot.values,texttemplate="%{text}",hovertemplate="%{y}<br>%{x}<br>Evidence-fit: %{z}/3<extra></extra>"))
-            fig.update_layout(height=440,margin=dict(l=10,r=10,t=30,b=110),xaxis_tickangle=-25)
+            fig = go.Figure(data=go.Heatmap(z=pivot.values,x=pivot.columns.tolist(),y=pivot.index.tolist(),zmin=0,zmax=3,colorscale=[[0,"#e8edf2"],[0.333,"#e8c66a"],[0.667,"#78a9c2"],[1,"#24734f"]],text=pivot.values,texttemplate="%{text}",hovertemplate="<b>%{y}</b><br>%{x}<br>Evidence level: %{z}/3<extra></extra>",colorbar=dict(title="Evidence level",tickvals=[0,1,2,3],ticktext=["0 · None found","1 · Indirect","2 · MENA tested","3 · Direct MENA test"])))
+            fig.update_layout(height=490,margin=dict(l=10,r=15,t=25,b=125),xaxis_tickangle=-25,yaxis_title="Feedstock",xaxis_title="Potential application")
             st.plotly_chart(fig,width="stretch")
-            hf = hdf.copy()
-            qh = st.text_input("Filter feedstock / application evidence",key="heat_evidence_filter")
-            if qh:
-                hf = hf[hf.astype(str).apply(lambda c:c.str.contains(qh,case=False,na=False)).any(axis=1)]
-            st.dataframe(hf,width="stretch",hide_index=True)
-            st.download_button("Download heatmap evidence data",hdf.to_csv(index=False).encode("utf-8"),"mena_feedstock_market_heatmap.csv","text/csv")
-        st.markdown("**Important:** date pits are not date-palm fronds; bagasse is not automatically free because it may already serve as process fuel; rice straw and cotton stalks require collection/handling and have competing uses. Each supply chain needs a country, season, moisture and delivered-cost model.")
+            st.info("Read this conservatively: a high score means stronger study evidence, not higher market demand, better product quality, higher selling price or profitability. The many zeroes are intentional: the source scan does not justify filling gaps with optimistic guesses.")
+            st.markdown("#### Inspect the evidence behind a cell")
+            c1,c2=st.columns(2)
+            with c1:
+                chosen_feed=st.selectbox("Feedstock",sorted(hdf["Feedstock"].unique()),key="evidence_feedstock_select")
+            with c2:
+                chosen_app=st.selectbox("Application",sorted(hdf["Market application"].unique()),key="evidence_application_select")
+            chosen=hdf[(hdf["Feedstock"]==chosen_feed)&(hdf["Market application"]==chosen_app)]
+            if not chosen.empty:
+                rec=chosen.iloc[0]
+                score=int(rec["Evidence-fit score (0-3)"])
+                st.metric("Evidence level",f"{score} / 3",str(rec["Evidence tier"]))
+                st.write(str(rec["Rationale / evidence caveat"]))
+                urls=str(rec.get("Source URL(s)",""))
+                if urls:
+                    for u in urls.split(";"):
+                        u=u.strip()
+                        if u:
+                            st.markdown(f"[Open source]({u})")
+            with st.expander("Show complete evidence register"):
+                st.dataframe(hdf[["Feedstock","Market application","Evidence-fit score (0-3)","Evidence tier","Rationale / evidence caveat","Source URL(s)" ]],width="stretch",hide_index=True)
+            st.download_button("Download evidence matrix (CSV)",hdf.to_csv(index=False).encode("utf-8"),"mena_feedstock_application_evidence.csv","text/csv")
+        st.markdown("#### What this matrix does not tell you")
+        st.markdown("""- **Supply:** recoverable tonnes, seasonality, moisture, competing uses and delivered cost must be assessed by country and supplier.
+- **Product performance:** yield, ash, surface area, adsorption capacity, soil response or electrode performance require feedstock- and process-specific testing.
+- **Market demand:** a regional need indicator is not a buyer, purchase order or addressable biochar volume.
+- **Profitability:** requires local CAPEX/OPEX, logistics, utility prices, product specifications and credible offtake prices.""")
+        st.caption("Feedstock identities are kept separate: date pits are not date-palm fronds; bagasse may already be used as process fuel; and rice straw/cotton stalks require collection, handling and competing-use analysis.")
     with tabs[2]:
         st.subheader("What value does the platform add?")
         st.markdown("The platform's defensible value proposition is **decision quality before capital is committed**. It should not claim that a case-study company lost money because it lacked our platform unless the source explicitly establishes that causal link.")

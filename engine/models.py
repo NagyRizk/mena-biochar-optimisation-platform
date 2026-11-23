@@ -151,11 +151,24 @@ class EconomicInputs:
     electricity_conversion_efficiency: float = 0.30
     carbon_credit_usd_tco2e: float = 0.0  # scenario assumption; only meaningful if removal is verified and creditable
 
+def _finite(name: str, value: float):
+    if not math.isfinite(float(value)):
+        raise ValueError(f"{name} must be finite.")
+
 def _nonnegative(name: str, value: float):
+    _finite(name, value)
     if value < 0:
         raise ValueError(f"{name} must be non-negative")
 
 def validate_process(x: ProcessInputs):
+    # Reject NaN/inf explicitly: comparisons with NaN otherwise silently pass.
+    for name, value in vars(x).items():
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            _finite(name, value)
+    if x.process_type not in {"slow_pyrolysis", "fast_pyrolysis", "torrefaction", "gasification", "htc"}:
+        raise ValueError(f"Unsupported process type: {x.process_type}")
+    if x.htc_water_to_dry_ratio < 0:
+        raise ValueError("HTC water-to-dry-feed ratio must be non-negative.")
     if x.wet_feed_t_y <= 0: raise ValueError("Annual wet feed must be positive.")
     if not 0 <= x.moisture_wet_basis < 1: raise ValueError("Moisture must be in [0, 1).")
     ys=[x.char_yield_dry,x.liquid_yield_dry,x.gas_yield_dry,x.other_yield_dry]
@@ -169,9 +182,23 @@ def validate_process(x: ProcessInputs):
     if not 0 <= x.liquid_to_heat_fraction <= 1: raise ValueError("Liquid-to-heat fraction must be in [0, 1].")
     if not 0 <= x.stable_carbon_fraction <= 1 or not 0 <= x.char_carbon_fraction <= 1:
         raise ValueError("Carbon fractions must be in [0, 1].")
+    if x.solid_cp_kJ_kgK <= 0 or x.water_cp_kJ_kgK <= 0 or x.steam_cp_kJ_kgK <= 0:
+        raise ValueError("Specific heat capacities must be positive.")
+    if x.water_latent_kJ_kg <= 0 or x.gas_lhv_MJ_kg < 0 or x.liquid_lhv_MJ_kg < 0:
+        raise ValueError("Latent heat must be positive and heating values non-negative.")
+    if not 0 <= x.htc_heat_recovery_fraction <= 1:
+        raise ValueError("HTC heat recovery fraction must be in [0, 1].")
+    if x.lifecycle_emissions_tco2e_y < 0:
+        raise ValueError("Lifecycle emissions must be non-negative.")
+    if x.feed_carbon_fraction_dry <= 0 or x.feed_carbon_fraction_dry > 1:
+        raise ValueError("Dry-feed carbon fraction must be in (0, 1].")
+    if x.pyrolysis_enthalpy_kJ_kg_dry < 0:
+        raise ValueError("Endothermic reaction heat input cannot be negative in this model.")
 
 def calculate_technical(x: ProcessInputs) -> dict[str, Any]:
     validate_process(x)
+    if x.process_type != "htc" and x.reactor_temp_C < 100.0:
+        raise ValueError("The evaporation model assumes atmospheric boiling; reactor temperature must be at least 100 °C (or use HTC).")
     wet = x.wet_feed_t_y
     dry = wet * (1-x.moisture_wet_basis)
     water_in = wet-dry
@@ -216,9 +243,10 @@ def calculate_technical(x: ProcessInputs) -> dict[str, Any]:
     feed_c = dry*x.feed_carbon_fraction_dry
     char_c = char*x.char_carbon_fraction
     retained = char_c/feed_c if feed_c > 0 else float("inf")
+    carbon_residual = feed_c - char_c
     return {
         "feed_carbon_t_y":feed_c,"char_carbon_t_y":char_c,"carbon_retained_fraction":retained,
-        "carbon_balance_ok":bool(retained <= 1.0),"reaction_heat_GJ_y":reaction_heat,
+        "carbon_balance_ok":bool(carbon_residual >= -1e-9),"carbon_balance_residual_tC_y":carbon_residual,"reaction_heat_GJ_y":reaction_heat,
         "water_property_source":(w["source"] if (x.use_steam_tables or x.process_type=="htc") else "user constants"),"slurry_water_t_y":slurry_water,"process_type":x.process_type,
         "wet_feed_t_y":wet,"dry_feed_t_y":dry,"feed_water_t_y":water_in,
         "char_t_y":char,"liquid_t_y":liquid,"gas_t_y":gas,"other_t_y":other,
@@ -235,7 +263,19 @@ def calculate_technical(x: ProcessInputs) -> dict[str, Any]:
     }
 
 def calculate_economics(t: dict[str,Any], p: ProcessInputs, e: EconomicInputs) -> dict[str,Any]:
-    if e.project_life_y <= 0: raise ValueError("Project life must be positive.")
+    for name, value in vars(e).items():
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            _finite(name, value)
+    for name in ("capex_usd", "feedstock_cost_usd_t_wet", "logistics_cost_usd_t_wet", "char_price_usd_t", "liquid_price_usd_t", "electricity_price_usd_kwh", "purchased_heat_price_usd_GJ", "electricity_use_kwh_t_dry", "labour_usd_y", "other_opex_usd_y", "carbon_credit_usd_tco2e"):
+        _nonnegative(name, getattr(e, name))
+    if not 0 <= e.maintenance_fraction_capex_y:
+        raise ValueError("Maintenance fraction must be non-negative.")
+    if not 0 <= e.annualisation_fraction <= 1:
+        raise ValueError("Annualisation fraction must be in [0, 1].")
+    if not 0 <= e.electricity_export_fraction_of_surplus <= 1 or not 0 <= e.electricity_conversion_efficiency <= 1:
+        raise ValueError("Electricity export fraction and conversion efficiency must be in [0, 1].")
+    if isinstance(e.project_life_y, bool) or int(e.project_life_y) != e.project_life_y or e.project_life_y <= 0:
+        raise ValueError("Project life must be a positive whole number of years.")
     if not 0 <= e.discount_rate < 1: raise ValueError("Discount rate must be in [0, 1).")
     crf = (e.discount_rate*(1+e.discount_rate)**e.project_life_y /
            ((1+e.discount_rate)**e.project_life_y-1)) if e.discount_rate else 1/e.project_life_y
@@ -248,7 +288,10 @@ def calculate_economics(t: dict[str,Any], p: ProcessInputs, e: EconomicInputs) -
     operating_cost=feed_cost+electricity_cost+heat_cost+e.labour_usd_y+maintenance+e.other_opex_usd_y
     char_revenue=t["char_t_y"]*e.char_price_usd_t
     liquid_revenue=t["liquid_t_y"]*(1-p.liquid_to_heat_fraction)*e.liquid_price_usd_t
-    export_electricity_kwh=t["heat_surplus_GJ_y"]*277.7777778*e.electricity_conversion_efficiency*e.electricity_export_fraction_of_surplus
+    # Surplus heat allocated to power is removed from exportable heat; only the
+    # converted electricity receives revenue (no double counting as heat + power).
+    export_heat_GJ = t["heat_surplus_GJ_y"] * e.electricity_export_fraction_of_surplus
+    export_electricity_kwh=export_heat_GJ*277.7777778*e.electricity_conversion_efficiency
     electricity_revenue=export_electricity_kwh*e.electricity_price_usd_kwh
     carbon_revenue=max(0.0,t["net_removal_proxy_tco2e_y"])*e.carbon_credit_usd_tco2e
     revenue=char_revenue+liquid_revenue+electricity_revenue+carbon_revenue
@@ -274,7 +317,7 @@ def calculate_economics(t: dict[str,Any], p: ProcessInputs, e: EconomicInputs) -
         "maintenance_usd_y":maintenance,"labour_usd_y":e.labour_usd_y,
         "other_opex_usd_y":e.other_opex_usd_y,"operating_cost_usd_y":operating_cost,
         "char_revenue_usd_y":char_revenue,"liquid_revenue_usd_y":liquid_revenue,
-        "electricity_revenue_usd_y":electricity_revenue,"carbon_revenue_usd_y":carbon_revenue,"total_revenue_usd_y":revenue,
+        "electricity_revenue_usd_y":electricity_revenue,"export_heat_GJ_y":export_heat_GJ,"export_electricity_kwh_y":export_electricity_kwh,"remaining_heat_surplus_GJ_y":max(0.0,t["heat_surplus_GJ_y"]-export_heat_GJ),"carbon_revenue_usd_y":carbon_revenue,"total_revenue_usd_y":revenue,
         "ebitda_like_usd_y":ebitda_like,"annual_economic_surplus_usd_y":annual_economic_surplus,
         "npv_usd":npv,"irr":irr,"simple_payback_y":payback,"crf":crf,
         "model_ids":["ECON-001"]

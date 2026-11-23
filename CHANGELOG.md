@@ -98,3 +98,7 @@
 - Added qualitative feedstock × application evidence-fit heatmap; explicitly not a demand forecast.
 - Added platform value proposition and carefully qualified case-study counterfactuals.
 - Added downloadable CSV registers for market evidence and heatmap evidence.
+
+## 4.2.6 — Model Library LaTeX repair
+- Corrected double-escaped LaTeX commands in the optimisation equations and economic equation summary.
+- Added a regression test to reject doubled command escapes in equation strings.

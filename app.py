@@ -563,11 +563,11 @@ if page == "Model Library":
         else:
             st.warning("The economics section could not be located in the technical reference.")
         st.markdown("### Economic equations at a glance")
-        st.latex(r"CRF=\\frac{i(1+i)^n}{(1+i)^n-1}")
-        st.latex(r"CAPEX_{ann}=CAPEX\\,CRF\\,a")
-        st.latex(r"OPEX=\\sum_j C_j")
+        st.latex(r"CRF=\frac{i(1+i)^n}{(1+i)^n-1}")
+        st.latex(r"CAPEX_{ann}=CAPEX\,CRF\,a")
+        st.latex(r"OPEX=\sum_j C_j")
         st.latex(r"EBITDA_{like}=Revenue-OPEX")
-        st.latex(r"NPV=-CAPEX+\\sum_{t=1}^{n}\\frac{CF_t}{(1+i)^t}")
+        st.latex(r"NPV=-CAPEX+\sum_{t=1}^{n}\frac{CF_t}{(1+i)^t}")
         st.warning("The platform's economics are a screening cash-flow model. Taxes, financing structure, working capital, escalation, ramp-up, replacement CAPEX and decommissioning are not fully modelled. Cost and price defaults are assumptions, not sourced market quotations.")
     with tabs[2]:
         st.subheader("Equation-to-source map")

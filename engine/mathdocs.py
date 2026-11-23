@@ -59,10 +59,10 @@ OPTIMIZE = [
     ("md", "**Decision variables**: feedstock class, reactor temperature T, residence time t and heating rate. The search is exhaustive over a discrete user-selected grid, not a continuous or stochastic optimiser."),
     ("md", "**Fixed basis**: annual throughput and the technical/economic assumptions inherited from the active Technical and Economic scenario. Feedstock moisture, carbon content, cost and logistics are screening presets."),
     ("md", "**Feasibility constraints**"),
-    ("tex", r"H/C\\le (H/C)_{max},\\qquad \\eta_C\\le 1,\\qquad t_{res}\\ge s\\,t_{95}(T)"),
+    ("tex", r"H/C\le (H/C)_{max},\qquad \eta_C\le 1,\qquad t_{res}\ge s\,t_{95}(T)"),
     ("md", "The particle constraint uses the 1-D single-particle model. Its kinetics are beech-wood parameters fitted over 573–708 K; predictions outside that interval are extrapolations. The optimiser reports only the best candidate within the tested grid."),
     ("md", "**Selectable objective**"),
-    ("tex", r"\\max NPV,\\qquad \\max S_{annual},\\qquad \\max \\mathrm{CO_2}_{net,proxy},\\qquad \\min p_C^*"),
+    ("tex", r"\max NPV,\qquad \max S_{annual},\qquad \max \mathrm{CO_2}_{net,proxy},\qquad \min p_C^*"),
     ("md", "NPV uses the simplified constant annual EBITDA-like cash flow in ECON-001. The break-even carbon price is calculated before carbon revenue. None of these outputs establishes a bankable project case."),
     ("md", "**Trade-off view**: the Pareto set is calculated on annual economic surplus and net-removal proxy. A design is dominated if another design is no worse on both and strictly better on at least one."),
 ]
